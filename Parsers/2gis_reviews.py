@@ -18,11 +18,6 @@ from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.common.action_chains import ActionChains
 from selenium.common.exceptions import NoSuchWindowException, WebDriverException, TimeoutException
 
-VERBOSE = True
-def dbg(msg: str):
-    if VERBOSE:
-        print(f"[DBG] {msg}", flush=True)
-
 # ===== ВХОД =====
 DGIS_URLS_FILE = "./Urls/2gis_urls.txt"
 FALLBACK_URL = ("https://2gis.ru/penza/search/%D0%B0%D0%B2%D1%82%D0%BE%D0%BB%D0%BE%D1%86%D0%BC%D0%B0%D0%BD/"
@@ -143,46 +138,41 @@ def click_cookies_if_any(driver):
         except: pass
 
 def probe_dom(driver, note=""):
-    try:
-        counts = driver.execute_script("""
-            const sels = {
-              TEXT: 'div._49x36f > a._1msln3t',
-              AUTHOR: 'span._16s5yj36',
-              DATE: 'div._a5f6uz',
-              RFILL: 'div._1m0m6z5 > div._1fkin5c',
-              REVIEW_CARD: 'article, [data-qa="review-card"], ._49x36f'
-            };
-            const out = {};
-            for (const [k, s] of Object.entries(sels)) {
-              out[k] = document.querySelectorAll(s).length;
-            }
-            out['iframes'] = document.querySelectorAll('iframe').length;
-            out['bodyLen'] = (document.body && (document.body.innerText||'')).length || 0;
+    counts = driver.execute_script("""
+        const sels = {
+          TEXT: 'div._49x36f > a._1msln3t',
+          AUTHOR: 'span._16s5yj36',
+          DATE: 'div._a5f6uz',
+          RFILL: 'div._1m0m6z5 > div._1fkin5c',
+          REVIEW_CARD: 'article, [data-qa="review-card"], ._49x36f'
+        };
+        const out = {};
+        for (const [k, s] of Object.entries(sels)) {
+          out[k] = document.querySelectorAll(s).length;
+        }
+        out['iframes'] = document.querySelectorAll('iframe').length;
+        out['bodyLen'] = (document.body && (document.body.innerText||'')).length || 0;
             
-            // Проверим наличие текста отзывов другими способами
-            const reviewTexts = Array.from(document.querySelectorAll('div, p, span')).filter(el => {
-                const text = el.textContent || '';
-                return text.length > 50 && text.length < 1000 && 
-                       !text.includes('Полезно') && !text.includes('Читать целиком');
-            });
-            out['potentialReviews'] = reviewTexts.length;
-            
-            return out;
-        """)
-        dbg(f"PROBE{f' [{note}]' if note else ''}: {counts}")
+        // Проверим наличие текста отзывов другими способами
+        const reviewTexts = Array.from(document.querySelectorAll('div, p, span')).filter(el => {
+            const text = el.textContent || '';
+            return text.length > 50 && text.length < 1000 && 
+                   !text.includes('Полезно') && !text.includes('Читать целиком');
+        });
+        out['potentialReviews'] = reviewTexts.length;
+        
+        return out;
+    """)
 
-        Path("Debug").mkdir(exist_ok=True)
-        html_path = "Debug/2gis_page.html"
-        png_path  = "Debug/2gis_page.png"
-        with open(html_path, "w", encoding="utf-8") as f:
-            f.write(driver.page_source)
-        try:
-            driver.get_screenshot_as_file(png_path)
-        except Exception:
-            pass
-        dbg(f"saved: {html_path}, {png_path}")
-    except Exception as e:
-        dbg(f"probe_dom error: {e}")
+    Path("Debug").mkdir(exist_ok=True)
+    html_path = "Debug/2gis_page.html"
+    png_path  = "Debug/2gis_page.png"
+    with open(html_path, "w", encoding="utf-8") as f:
+        f.write(driver.page_source)
+    try:
+        driver.get_screenshot_as_file(png_path)
+    except Exception:
+        pass
 
 def ensure_reviews_tab(driver):
     """Кликаем по табу 'Отзывы'"""
@@ -202,7 +192,6 @@ def switch_to_reviews_iframe(driver) -> bool:
     try:
         # Сначала попробуем найти iframe по различным признакам
         iframes = driver.find_elements(By.TAG_NAME, "iframe")
-        dbg(f"Found {len(iframes)} iframes")
         
         for i, frame in enumerate(iframes):
             try:
@@ -213,7 +202,6 @@ def switch_to_reviews_iframe(driver) -> bool:
                 review_count = len([el for el in review_elements if len(el.text or '') > 50])
                 
                 if review_count > 0:
-                    dbg(f"Switched to iframe {i} with {review_count} potential review elements")
                     return True
                 driver.switch_to.default_content()
             except Exception as e:
@@ -222,7 +210,6 @@ def switch_to_reviews_iframe(driver) -> bool:
                 
         return False
     except Exception as e:
-        dbg(f"Error switching to iframe: {e}")
         return False
 
 def wait_for_reviews_content(driver):
@@ -235,12 +222,8 @@ def wait_for_reviews_content(driver):
             return len(review_like) > 2
         except:
             return False
-    
-    try:
-        WebDriverWait(driver, WAIT_TIMEOUT).until(_has_review_content)
-        dbg("Review content detected")
-    except TimeoutException:
-        dbg("Timeout waiting for review content")
+
+    WebDriverWait(driver, WAIT_TIMEOUT).until(_has_review_content)
 
 def get_scroll_container(driver):
     try: 
@@ -279,7 +262,6 @@ def click_load_more_if_any(driver) -> bool:
                 driver.execute_script("arguments[0].scrollIntoView({block:'center'});", btn)
                 driver.execute_script("arguments[0].click();", btn)
                 time.sleep(1)
-                dbg("Clicked load more button")
                 return True
             except: continue
         return False
@@ -288,17 +270,14 @@ def click_load_more_if_any(driver) -> bool:
 
 def _rating_from_spans_count(card) -> Optional[float]:
     """Рейтинг по количеству span элементов"""
-    try:
-        # Пробуем основные селекторы
-        fill_elements = card.find_elements(By.CSS_SELECTOR, RATING_FILL_SEL)
-        for fill in fill_elements:
-            stars = fill.find_elements(By.TAG_NAME, "span")
-            cnt = len(stars)
-            if 1 <= cnt <= 5:
-                return float(cnt)
+    # Пробуем основные селекторы
+    fill_elements = card.find_elements(By.CSS_SELECTOR, RATING_FILL_SEL)
+    for fill in fill_elements:
+        stars = fill.find_elements(By.TAG_NAME, "span")
+        cnt = len(stars)
+        if 1 <= cnt <= 5:
+            return float(cnt)
                 
-    except Exception as e:
-        dbg(f"Rating extraction error: {e}")
     return None
 
 def find_review_text(card):
@@ -432,7 +411,6 @@ def find_review_cards(driver):
 def collect_visible_batch(driver, seen: set, out: list, cutoff_date) -> tuple[int, bool]:
     added, met_old = 0, False
     cards = find_review_cards(driver)
-    dbg(f"Found {len(cards)} potential review cards")
     
     for card in cards:
         try:
@@ -464,10 +442,8 @@ def collect_visible_batch(driver, seen: set, out: list, cutoff_date) -> tuple[in
                 seen.add(key)
                 out.append(item)
                 added += 1
-                dbg(f"Added review: {item.get('author')} - {len(txt)} chars")
                 
         except Exception as e:
-            dbg(f"Error processing card: {e}")
             continue
             
     return added, met_old
@@ -484,12 +460,10 @@ def process_one_url(url: str) -> List[Dict]:
         inject_perf_css(driver)
         time.sleep(3)  # Даем время на загрузку
 
-        dbg("Page loaded, start probe A")
         probe_dom(driver, "A: initial")
 
         # Название организации
         org = extract_organization(driver) or ""
-        dbg(f"Org guess: {org}")
 
         # Переключение на отзывы
         try:
@@ -502,15 +476,12 @@ def process_one_url(url: str) -> List[Dict]:
 
         # Переключение в iframe
         iframe_switched = switch_to_reviews_iframe(driver)
-        dbg(f"Iframe switched: {iframe_switched}")
 
-        dbg("Start probe B (after iframe/tab)")
         probe_dom(driver, "B: after iframe/tab")
 
         # Ожидание контента
         wait_for_reviews_content(driver)
 
-        dbg("Start probe C (after wait)")
         probe_dom(driver, "C: after wait")
 
         container = get_scroll_container(driver)
@@ -524,12 +495,10 @@ def process_one_url(url: str) -> List[Dict]:
         # Первый сбор
         added, met_old = collect_visible_batch(driver, seen, results, cutoff_date)
         if met_old: stop_by_age = True
-        dbg(f"Initial collection: {added} reviews")
 
         # Цикл скроллинга
         for i in range(BURSTS):
             if stop_by_age: 
-                dbg("Stopping due to old reviews")
                 break
                 
             prev_len = len(results)
@@ -540,15 +509,12 @@ def process_one_url(url: str) -> List[Dict]:
             added, met_old = collect_visible_batch(driver, seen, results, cutoff_date)
             if met_old: stop_by_age = True
             
-            dbg(f"Burst {i+1}: added {added}, total {len(results)}")
-            
             if added == 0 and len(results) == prev_len and not clicked:
                 idle += 1
             else:
                 idle = 0
                 
             if idle >= IDLE_LIMIT: 
-                dbg("Stopping due to idle limit")
                 break
 
         for r in results: 
@@ -558,7 +524,6 @@ def process_one_url(url: str) -> List[Dict]:
         return results
         
     except (NoSuchWindowException, WebDriverException, TimeoutException) as e:
-        dbg(f"Browser error: {e}")
         return []
     finally:
         try: 
