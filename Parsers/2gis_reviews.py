@@ -16,7 +16,7 @@ from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.common.action_chains import ActionChains
-from selenium.common.exceptions import NoSuchWindowException, WebDriverException, TimeoutException
+from selenium.common.exceptions import NoSuchWindowException, WebDriverException, TimeoutException, StaleElementReferenceException
 
 # ===== ВХОД =====
 DGIS_URLS_FILE = "./Urls/2gis_urls.txt"
@@ -40,14 +40,11 @@ YEARS_LIMIT         = 3
 ENFORCE_DATE_CUTOFF = False
 
 # ===== 2ГИС СЕЛЕКТОРЫ =====
-# Основные селекторы
-AUTHOR_SEL       = "span._16s5yj36"                 # автор
-DATE_SEL         = "div._a5f6uz"                    # дата
-RATING_FILL_SEL  = "div._1fkin5c"    # контейнер со span-звёздами
-TEXT_BLOCK_SEL   = "a._1wlx08h"       # текст отзыва
-
-# Альтернативные селекторы на случай изменения структуры
-ALT_TEXT_SEL       = ["a._1msln3t"]  # альтернативные селекторы текста
+AUTHOR_SEL       = "span._16s5yj36"          # автор (в title или text)
+DATE_SEL         = "div._a5f6uz"             # дата
+RATING_FILL_SEL  = "div._1fkin5c"            # контейнер со span-звёздами
+TEXT_BLOCK_SEL   = "a._1wlx08h"              # основной текст отзыва
+ALT_TEXT_SEL     = ["a._1msln3t"]            # альтернативный селектор текста
 
 MONTHS_RU = {"января":1,"февраля":2,"марта":3,"апреля":4,"мая":5,"июня":6,
              "июля":7,"августа":8,"сентября":9,"октября":10,"ноября":11,"декабря":12}
@@ -138,121 +135,128 @@ def click_cookies_if_any(driver):
         except: pass
 
 def probe_dom(driver, note=""):
-    counts = driver.execute_script("""
-        const sels = {
-          TEXT: 'div._49x36f > a._1msln3t',
-          AUTHOR: 'span._16s5yj36',
-          DATE: 'div._a5f6uz',
-          RFILL: 'div._1m0m6z5 > div._1fkin5c',
-          REVIEW_CARD: 'article, [data-qa="review-card"], ._49x36f'
-        };
-        const out = {};
-        for (const [k, s] of Object.entries(sels)) {
-          out[k] = document.querySelectorAll(s).length;
-        }
-        out['iframes'] = document.querySelectorAll('iframe').length;
-        out['bodyLen'] = (document.body && (document.body.innerText||'')).length || 0;
-            
-        // Проверим наличие текста отзывов другими способами
-        const reviewTexts = Array.from(document.querySelectorAll('div, p, span')).filter(el => {
-            const text = el.textContent || '';
-            return text.length > 50 && text.length < 1000 && 
-                   !text.includes('Полезно') && !text.includes('Читать целиком');
-        });
-        out['potentialReviews'] = reviewTexts.length;
-        
-        return out;
-    """)
-
-    Path("Debug").mkdir(exist_ok=True)
-    html_path = "Debug/2gis_page.html"
-    png_path  = "Debug/2gis_page.png"
-    with open(html_path, "w", encoding="utf-8") as f:
-        f.write(driver.page_source)
     try:
+        Path("Debug").mkdir(exist_ok=True)
+        html_path = "Debug/2gis_page.html"
+        png_path  = "Debug/2gis_page.png"
+        with open(html_path, "w", encoding="utf-8") as f:
+            f.write(driver.page_source)
         driver.get_screenshot_as_file(png_path)
     except Exception:
         pass
 
 def ensure_reviews_tab(driver):
-    """Кликаем по табу 'Отзывы'"""
+    """Кликаем по табу 'Отзывы' (прямой линк предпочтительнее)."""
+    # Сначала — точный линк на вкладку
+    try:
+        a = driver.find_element(By.CSS_SELECTOR, "a[href*='/tab/reviews']")
+        driver.execute_script("arguments[0].scrollIntoView({block:'center'});", a)
+        driver.execute_script("arguments[0].click();", a)
+        time.sleep(1.5)
+        return
+    except: pass
+    # Фолбэк — по тексту
     try:
         tabs = driver.find_elements(By.XPATH, "//*[self::a or self::span or self::div][contains(., 'Отзывы')]")
         for t in tabs[:3]:
             try:
                 driver.execute_script("arguments[0].scrollIntoView({block:'center'});", t)
                 driver.execute_script("arguments[0].click();", t)
-                time.sleep(2)  # Увеличиваем время ожидания
+                time.sleep(1.5)
                 break
             except: pass
     except: pass
 
 def switch_to_reviews_iframe(driver) -> bool:
-    """Переключение в iframe с отзывами"""
+    """2ГИС обычно без iframe, оставляем мягкий поиск — возвращаем False если не нашли."""
     try:
-        # Сначала попробуем найти iframe по различным признакам
         iframes = driver.find_elements(By.TAG_NAME, "iframe")
-        
-        for i, frame in enumerate(iframes):
+        for frame in iframes:
             try:
                 driver.switch_to.frame(frame)
-                # Проверим, есть ли в этом фрейме элементы отзывов
-                time.sleep(1)
-                review_elements = driver.find_elements(By.CSS_SELECTOR, "div, span, p")
-                review_count = len([el for el in review_elements if len(el.text or '') > 50])
-                
-                if review_count > 0:
+                time.sleep(0.5)
+                if driver.find_elements(By.CSS_SELECTOR, "div._1k5soqfl, div._49x36f a._1wlx08h, div._49x36f a._1msln3t"):
                     return True
                 driver.switch_to.default_content()
-            except Exception as e:
+            except:
                 driver.switch_to.default_content()
-                continue
-                
         return False
-    except Exception as e:
+    except:
         return False
 
 def wait_for_reviews_content(driver):
-    """Ожидание появления контента отзывов"""
-    def _has_review_content(drv):
-        try:
-            # Проверяем наличие различных элементов отзывов
-            elements = drv.find_elements(By.CSS_SELECTOR, "div, p, span")
-            review_like = [el for el in elements if 50 < len(el.text or '') < 1000]
-            return len(review_like) > 2
-        except:
-            return False
+    """Ожидание появления хотя бы одного блока отзыва."""
+    WebDriverWait(driver, WAIT_TIMEOUT).until(
+        lambda d: len(d.find_elements(By.CSS_SELECTOR, "div._1k5soqfl, div._49x36f a._1wlx08h, div._49x36f a._1msln3t")) > 0
+    )
 
-    WebDriverWait(driver, WAIT_TIMEOUT).until(_has_review_content)
+# === FIX: точное определение скролл-контейнера по вашему HTML ===
+def get_scroll_container(driver, timeout: int = 15):
+    """
+    Возвращает внутренний скролл-контейнер вкладки «Отзывы»:
+    1) точный селектор: div._1rkbbi0x[data-scroll='true']
+    2) любой [data-scroll='true'], содержащий карточки отзывов
+    3) предок карточек с overflowY=auto|scroll и реальным скроллом
+    """
+    def _find():
+        return driver.execute_script("""
+            const isScrollable = el => !!el && (el.scrollHeight > el.clientHeight) &&
+                                       ['auto','scroll'].includes(getComputedStyle(el).overflowY);
 
-def get_scroll_container(driver):
-    try: 
-        # Пробуем найти контейнер для скролла
-        containers = driver.find_elements(By.CSS_SELECTOR, "div._guxkefv, div.scroll-container, [data-qa='reviews-list']")
-        if containers:
-            return containers[0]
+            // 1) Точный селектор из вашего фрагмента
+            let el = document.querySelector('div._1rkbbi0x[data-scroll="true"]');
+            if (isScrollable(el)) return el;
+
+            // 2) Любой data-scroll=true, но чтобы внутри были отзывы
+            const candidates = Array.from(document.querySelectorAll('[data-scroll="true"]'));
+            for (const c of candidates) {
+              if ((c.querySelector('div._1k5soqfl') || c.querySelector('div._49x36f a._1wlx08h, div._49x36f a._1msln3t')) && isScrollable(c)) {
+                return c;
+              }
+            }
+
+            // 3) Предок карточек с реальным скроллом
+            const cards = document.querySelectorAll('div._1k5soqfl, div._49x36f');
+            for (const card of cards) {
+              let p = card;
+              for (let i=0; i<10 && p; i++) {
+                if (isScrollable(p)) return p;
+                p = p.parentElement;
+              }
+            }
+            return null;
+        """)
+
+    end = time.time() + timeout
+    el = _find()
+    while not el and time.time() < end:
+        time.sleep(0.3)
+        el = _find()
+
+    if not el:
+        # Фолбэк — body (нежелателен, но лучше, чем ничего)
+        el = driver.execute_script("return document.scrollingElement || document.body;")
+
+    # Подсветим для отладки и фокуснём
+    try:
+        driver.execute_script("arguments[0].style.outline='3px solid red'; arguments[0].focus && arguments[0].focus();", el)
     except: pass
-    
-    return driver.execute_script("return document.scrollingElement || document.body;")
+    return el
+# === /FIX ===
 
 def autoscroll_burst(driver, container, ms: int):
-    try:
-        driver.execute_script("""
-            const box = arguments[0];
-            const dur = arguments[1];
-            const start = performance.now();
-            const scrollStep = () => {
-                const now = performance.now();
-                if (now - start < dur) {
-                    box.scrollTop += box.clientHeight * 0.8;
-                    setTimeout(scrollStep, 200);
-                }
-            };
-            scrollStep();
-        """, container, ms)
-    except: 
-        # Простой скролл если сложный не работает
-        driver.execute_script("arguments[0].scrollTop = arguments[0].scrollHeight;", container)
+    driver.execute_script("""
+        const box = arguments[0];
+        const dur = arguments[1];
+        const t0 = performance.now();
+        function step(){
+          if (performance.now() - t0 < dur) {
+            box.scrollTop = Math.min(box.scrollTop + Math.floor(box.clientHeight*0.9), box.scrollHeight);
+            setTimeout(step, 150);
+          }
+        }
+        step();
+    """, container, ms)
 
 def click_load_more_if_any(driver) -> bool:
     try:
@@ -268,29 +272,37 @@ def click_load_more_if_any(driver) -> bool:
     except:
         return False
 
+def click_expanders_if_any(driver) -> int:
+    """Разворачиваем 'Читать целиком' в пределах видимости (необязательно, но полезно)."""
+    count = 0
+    try:
+        expands = driver.find_elements(By.XPATH, "//span[contains(., 'Читать целиком')]")
+        for e in expands:
+            try:
+                driver.execute_script("arguments[0].click();", e)
+                count += 1
+            except: pass
+    except: pass
+    return count
+
 def _rating_from_spans_count(card) -> Optional[float]:
-    """Рейтинг по количеству span элементов"""
-    # Пробуем основные селекторы
     fill_elements = card.find_elements(By.CSS_SELECTOR, RATING_FILL_SEL)
     for fill in fill_elements:
         stars = fill.find_elements(By.TAG_NAME, "span")
         cnt = len(stars)
         if 1 <= cnt <= 5:
             return float(cnt)
-                
     return None
 
 def find_review_text(card):
-    """Поиск текста отзыва разными способами"""
-    # Способ 1: Основной селектор
+    # 1) Основной селектор
     try:
         text_el = card.find_element(By.CSS_SELECTOR, TEXT_BLOCK_SEL)
         text = text_el.text.strip()
         if text and len(text) > 10:
             return text
     except: pass
-    
-    # Способ 2: Альтернативные селекторы
+    # 2) Альтернатива
     for sel in ALT_TEXT_SEL:
         try:
             text_el = card.find_element(By.CSS_SELECTOR, sel)
@@ -298,30 +310,31 @@ def find_review_text(card):
             if text and len(text) > 10 and not text.startswith('Полезно'):
                 return text
         except: continue
-    
-    # Способ 3: Поиск по содержанию (длинный текст)
+    # 3) Хейуристика (длинные тексты, без служебных слов)
     try:
         all_elements = card.find_elements(By.CSS_SELECTOR, "div, p, span")
         for el in all_elements:
             text = el.text.strip()
-            if 20 <= len(text) <= 1000 and not any(x in text for x in ['Полезно', 'Читать целиком', 'Официальный ответ']):
+            if 20 <= len(text) <= 2000 and not any(x in text for x in ['Полезно', 'Читать целиком', 'Официальный ответ']):
                 return text
     except: pass
-    
     return ""
 
 def extract_review_from_card(card, driver) -> dict:
     # AUTHOR
     author = ""
-    author_el = card.find_element(By.CSS_SELECTOR, AUTHOR_SEL)
-    author = (author_el.get_attribute("title") or author_el.text or "").strip()
+    try:
+        author_el = card.find_element(By.CSS_SELECTOR, AUTHOR_SEL)
+        author = (author_el.get_attribute("title") or author_el.text or "").strip()
+    except: pass
 
     # DATE
     date_raw, date_iso = "", ""
-
-    date_el = card.find_element(By.CSS_SELECTOR, DATE_SEL)
-    date_raw = (date_el.text or "").strip()
-    date_iso = parse_ru_date_to_iso(date_raw) or ""
+    try:
+        date_el = card.find_element(By.CSS_SELECTOR, DATE_SEL)
+        date_raw = (date_el.text or "").strip()
+        date_iso = parse_ru_date_to_iso(date_raw) or ""
+    except: pass
 
     # RATING
     rating = _rating_from_spans_count(card)
@@ -330,36 +343,26 @@ def extract_review_from_card(card, driver) -> dict:
     text = find_review_text(card)
     text = re.sub(r"[\r\n]+", " ", text).strip()
 
-    return {
-        "author": author,
-        "rating": rating,
-        "date_raw": date_raw,
-        "date_iso": date_iso,
-        "text": text,
-    }
+    return {"author": author, "rating": rating, "date_raw": date_raw, "date_iso": date_iso, "text": text}
 
 def extract_organization(driver) -> str:
-    try: 
+    try:
         driver.switch_to.default_content()
     except: pass
-    
-    # Пробуем разные способы извлечения названия организации
     selectors = [
         "//h1", "//h2", "//h3",
         "//*[contains(@class, 'business-name')]",
         "//*[contains(@class, 'org-name')]",
         "//*[contains(@class, 'company-name')]"
     ]
-    
     for xp in selectors:
         try:
             elements = driver.find_elements(By.XPATH, xp)
             for el in elements:
                 t = el.text.strip()
-                if t and len(t) > 2 and len(t) < 100:
+                if 2 < len(t) < 100:
                     return t
         except: pass
-    
     try:
         title = (driver.title or "").strip()
         for sep in [" — ", " – ", " - ", " | "]:
@@ -370,30 +373,25 @@ def extract_organization(driver) -> str:
         return ""
 
 def find_review_cards(driver):
-    """Поиск карточек отзывов разными способами"""
     cards = []
-    
-    # Способ 1: По основным селекторам
+    # 1) Основные контейнеры
     try:
-        main_cards = driver.find_elements(By.CSS_SELECTOR, "article, [data-qa='review-card'], ._49x36f")
-        cards.extend(main_cards)
+        main = driver.find_elements(By.CSS_SELECTOR, "article, [data-qa='review-card'], ._49x36f")
+        cards.extend(main)
     except: pass
-    
-    # Способ 2: По наличию даты и автора
+    # 2) По дате
     try:
         date_elements = driver.find_elements(By.CSS_SELECTOR, DATE_SEL)
         for date_el in date_elements:
             try:
-                # Поднимаемся до общего контейнера
                 parent = date_el
                 for _ in range(5):
                     parent = parent.find_element(By.XPATH, "./..")
-                    if parent not in cards:
-                        cards.append(parent)
+                if parent not in cards:
+                    cards.append(parent)
             except: continue
     except: pass
-    
-    # Способ 3: По структуре (элементы с рейтингом)
+    # 3) По рейтингу
     try:
         rating_elements = driver.find_elements(By.CSS_SELECTOR, RATING_FILL_SEL)
         for rating_el in rating_elements:
@@ -401,30 +399,24 @@ def find_review_cards(driver):
                 parent = rating_el
                 for _ in range(4):
                     parent = parent.find_element(By.XPATH, "./..")
-                    if parent not in cards:
-                        cards.append(parent)
+                if parent not in cards:
+                    cards.append(parent)
             except: continue
     except: pass
-    
     return cards
 
 def collect_visible_batch(driver, seen: set, out: list, cutoff_date) -> tuple[int, bool]:
     added, met_old = 0, False
     cards = find_review_cards(driver)
-    
     for card in cards:
         try:
             item = extract_review_from_card(card, driver)
             txt = (item.get("text") or "").strip()
-            
-            # Пропускаем если текст слишком короткий или отсутствует
             if not txt or len(txt) < 20:
                 continue
-
             d_iso = item.get("date_iso") or ""
             if ENFORCE_DATE_CUTOFF and not d_iso:
                 continue
-                
             if d_iso:
                 try:
                     d = datetime.fromisoformat(d_iso[:10]).date()
@@ -433,19 +425,13 @@ def collect_visible_batch(driver, seen: set, out: list, cutoff_date) -> tuple[in
                         continue
                 except Exception:
                     pass
-
-            key = (item.get("author", "").strip(),
-                   item.get("date_raw", "").strip(),
-                   txt[:80])
-                   
+            key = (item.get("author", "").strip(), item.get("date_raw", "").strip(), txt[:80])
             if key not in seen:
                 seen.add(key)
                 out.append(item)
                 added += 1
-                
-        except Exception as e:
+        except Exception:
             continue
-            
     return added, met_old
 
 def process_one_url(url: str) -> List[Dict]:
@@ -458,32 +444,28 @@ def process_one_url(url: str) -> List[Dict]:
             driver.quit(); return []
 
         inject_perf_css(driver)
-        time.sleep(3)  # Даем время на загрузку
+        time.sleep(2)
 
         probe_dom(driver, "A: initial")
 
-        # Название организации
         org = extract_organization(driver) or ""
 
-        # Переключение на отзывы
-        try:
-            click_cookies_if_any(driver)
-        except: pass
-        
-        try:
-            ensure_reviews_tab(driver)
+        try: click_cookies_if_any(driver)
         except: pass
 
-        # Переключение в iframe
-        iframe_switched = switch_to_reviews_iframe(driver)
+        try: ensure_reviews_tab(driver)
+        except: pass
 
-        probe_dom(driver, "B: after iframe/tab")
+        # Обычно без iframe; мягкая попытка:
+        _ = switch_to_reviews_iframe(driver)
+        # Важно: возвращаемся в основной контекст
+        try: driver.switch_to.default_content()
+        except: pass
 
-        # Ожидание контента
         wait_for_reviews_content(driver)
+        probe_dom(driver, "B: reviews visible")
 
-        probe_dom(driver, "C: after wait")
-
+        # === FIX: берём корректный скролл-контейнер ===
         container = get_scroll_container(driver)
         cutoff_date = datetime.now().date() - timedelta(days=365 * YEARS_LIMIT)
 
@@ -492,44 +474,53 @@ def process_one_url(url: str) -> List[Dict]:
         idle = 0
         stop_by_age = False
 
-        # Первый сбор
+        # Первый сбор + разворот «Читать целиком»
+        try: click_expanders_if_any(driver)
+        except: pass
         added, met_old = collect_visible_batch(driver, seen, results, cutoff_date)
         if met_old: stop_by_age = True
 
         # Цикл скроллинга
         for i in range(BURSTS):
-            if stop_by_age: 
+            if stop_by_age:
                 break
-                
+
             prev_len = len(results)
             clicked = click_load_more_if_any(driver)
-            autoscroll_burst(driver, container, BURST_MS)
-            time.sleep(1)  # Ждем загрузки новых отзывов
-            
+
+            # === FIX: контейнер может пересоздаться — переопределяем при необходимости ===
+            try:
+                autoscroll_burst(driver, container, BURST_MS)
+            except (StaleElementReferenceException, WebDriverException):
+                container = get_scroll_container(driver)
+                autoscroll_burst(driver, container, BURST_MS)
+
+            time.sleep(1.0)
+
+            try: click_expanders_if_any(driver)
+            except: pass
+
             added, met_old = collect_visible_batch(driver, seen, results, cutoff_date)
             if met_old: stop_by_age = True
-            
+
             if added == 0 and len(results) == prev_len and not clicked:
                 idle += 1
             else:
                 idle = 0
-                
-            if idle >= IDLE_LIMIT: 
+            if idle >= IDLE_LIMIT:
                 break
 
-        for r in results: 
+        for r in results:
             r["organization"] = org
-            
+
         print(f"  Собрано: {len(results)} | org={org or '-'}")
         return results
-        
-    except (NoSuchWindowException, WebDriverException, TimeoutException) as e:
+
+    except (NoSuchWindowException, WebDriverException, TimeoutException):
         return []
     finally:
-        try: 
-            driver.quit()
-        except: 
-            pass
+        try: driver.quit()
+        except: pass
 
 def main():
     try:
