@@ -1,328 +1,449 @@
-# 2gis_reviews_yandex.py
 # -*- coding: utf-8 -*-
-
-import os
-import re
 import csv
-import time
-import shutil
-import tempfile
-import argparse
+import re
 from datetime import datetime, timedelta
-from typing import List, Dict, Optional, Tuple
+from pathlib import Path
+from urllib.parse import urlparse, unquote
 
 from selenium import webdriver
-from selenium.webdriver.common.by import By
 from selenium.webdriver.chrome.service import Service
-from selenium.webdriver.common.action_chains import ActionChains
+from selenium.webdriver.common.by import By
+from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
+from selenium.webdriver.common.action_chains import ActionChains
+from selenium.common.exceptions import NoSuchWindowException, WebDriverException, TimeoutException
 
+# ===== вход =====
+YAMAPS_URLS_FILE = "./Urls/yamaps_urls.txt"  # по одной ссылке на строку
+FALLBACK_URL = ("https://yandex.ru/maps/org/avtolotsman/1694054504/reviews/"
+                "?ll=44.957771%2C53.220474&mode=search&sll=44.986159%2C53.218956"
+                "&sspn=0.086370%2C0.033325&tab=reviews&text=автолоцман&z=14")
 
-DEFAULT_URL = "https://2gis.ru/penza/firm/70000001057701394/tab/reviews"
-DEFAULT_BROWSER = r"C:\Program Files\Yandex\YandexBrowser\Application\browser.exe"
-DEFAULT_DRIVER  = r"E:\YandexDriver\yandexdriver.exe"   # поменяйте под себя
+# === УКАЖИ ПУТИ К БРАУЗЕРУ И ДРАЙВЕРУ ===
+YANDEX_BROWSER_BINARY = "/Applications/Yandex.app/Contents/MacOS/Yandex" # поменять для windows
+YANDEXDRIVER_PATH     = "drivers/yandexdriver" # поменять для windows
 
+# === КУДА ПИСАТЬ CSV ===
+OUT_CSV = "Csv/yamaps_reviews.csv"
 
-# -------------------- Утилиты --------------------
+# Параметры
+WAIT_TIMEOUT   = 60
+BURSTS         = 12      # сколько "рывков" автоскролла сделаем на страницу
+BURST_MS       = 1200    # длительность одного рывка (мс)
+IDLE_LIMIT     = 3       # сколько раз подряд можно не находить новых карточек прежде чем остановиться
+YEARS_LIMIT    = 3       # ЛИМИТ возраста отзывов в годах
 
-RU_MONTHS = {
-    'января':1,'февраля':2,'марта':3,'апреля':4,'мая':5,'июня':6,
-    'июля':7,'августа':8,'сентября':9,'октября':10,'ноября':11,'декабря':12
+MONTHS_RU = {
+    "января": 1, "февраля": 2, "марта": 3, "апреля": 4, "мая": 5, "июня": 6,
+    "июля": 7, "августа": 8, "сентября": 9, "октября": 10, "ноября": 11, "декабря": 12,
 }
-DATE_RE = re.compile(r'(\d{1,2})\s+([А-Яа-я]+)\s+(\d{4})')
-AD_TRASH = re.compile(r"(за[её]м|кредит|микрофинанс|1\s*место|реклама|акци[яи])", re.I)
+RELATIVE_MAP = {"сегодня": 0, "вчера": -1}
 
-def ru_date_to_iso(s: str) -> str:
-    s = (s or "").strip()
+def parse_rating(aria_label: str):
+    if not aria_label:
+        return None
+    m = re.search(r"Оценка\s+([0-9]+(?:[.,][0-9]+)?)", aria_label, flags=re.I)
+    if not m:
+        return None
+    try:
+        return float(m.group(1).replace(",", "."))
+    except Exception:
+        return None
+
+def parse_ru_date_to_iso(s: str):
+    """Возвращает только дату 'YYYY-MM-DD' (None, если не распознали)."""
     if not s:
-        return ""
-    low = s.lower()
-    if low == "сегодня":
-        return datetime.now().strftime("%Y-%m-%d")
-    if low == "вчера":
-        return (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
-    m = DATE_RE.search(s)
+        return None
+    s = s.strip().lower()
+    if s in RELATIVE_MAP:
+        d = datetime.now().date() + timedelta(days=RELATIVE_MAP[s])
+        return d.isoformat()
+
+    m = re.match(r"^(\d{1,2})\s+([а-яё]+)(?:\s+(\d{4}))?$", s, flags=re.I)
     if m:
-        d, mon_name, y = m.group(1), m.group(2).lower(), m.group(3)
-        mon = RU_MONTHS.get(mon_name)
+        day = int(m.group(1))
+        mon = MONTHS_RU.get(m.group(2))
+        year = int(m.group(3)) if m.group(3) else datetime.now().year
         if mon:
             try:
-                return datetime(int(y), mon, int(d)).strftime("%Y-%m-%d")
+                return datetime(year, mon, day).date().isoformat()
             except Exception:
-                return ""
-    # ISO/датавремя
-    for fmt in ("%Y-%m-%d", "%Y-%m-%dT%H:%M:%S%z", "%Y-%m-%dT%H:%M:%S"):
+                return None
+
+    m2 = re.match(r"^(\d{1,2})\.(\d{1,2})\.(\d{2,4})$", s)
+    if m2:
+        d, mo, y = int(m2.group(1)), int(m2.group(2)), int(m2.group(3))
+        if y < 100: y += 2000
         try:
-            return datetime.strptime(s, fmt).strftime("%Y-%m-%d")
+            return datetime(y, mo, d).date().isoformat()
+        except Exception:
+            return None
+    return None
+
+def build_options() -> Options:
+    opts = Options()
+    opts.binary_location = YANDEX_BROWSER_BINARY
+    opts.add_argument("--start-maximized")
+    opts.add_argument("--no-sandbox")
+    opts.add_argument("--disable-dev-shm-usage")
+    opts.page_load_strategy = 'eager'
+    # постоянный профиль: логин, куки, пройденные капчи сохраняются
+    user_dir = str(Path.home() / ".yandex-scraper-profile")
+    opts.add_argument(f"--user-data-dir={user_dir}")
+    opts.add_argument("--profile-directory=Default")
+    return opts
+
+def setup_driver() -> webdriver.Chrome:
+    service = Service(executable_path=YANDEXDRIVER_PATH)
+    drv = webdriver.Chrome(service=service, options=build_options())
+    drv.set_page_load_timeout(120)
+    drv.set_script_timeout(120)
+    drv.implicitly_wait(0)
+    return drv
+
+def ensure_window(drv: webdriver.Chrome) -> bool:
+    try:
+        return bool(drv.window_handles)
+    except Exception:
+        return False
+
+def safe_get(drv: webdriver.Chrome, url: str) -> bool:
+    try:
+        drv.get(url)
+        return True
+    except (NoSuchWindowException, WebDriverException):
+        return False
+
+def get_scroll_container(driver):
+    WebDriverWait(driver, WAIT_TIMEOUT).until(
+        EC.presence_of_element_located((By.CSS_SELECTOR, "div.business-review-view"))
+    )
+    first_review = driver.find_element(By.CSS_SELECTOR, "div.business-review-view")
+    return driver.execute_script("""
+        var el = arguments[0];
+        function isScrollable(e){
+            if(!e) return false;
+            var s = getComputedStyle(e);
+            return /(auto|scroll)/.test(s.overflowY);
+        }
+        while (el){
+            if (isScrollable(el)) return el;
+            el = el.parentElement;
+        }
+        return document.scrollingElement || document.body;
+    """, first_review)
+
+def inject_perf_css(driver):
+    try:
+        driver.execute_script("""
+            if (!document.getElementById('no-anim-style')) {
+              var st = document.createElement('style');
+              st.id = 'no-anim-style';
+              st.innerHTML = '*{animation:none!important;transition:none!important;} html{scroll-behavior:auto!important;}';
+              document.head.appendChild(st);
+            }
+        """)
+    except (NoSuchWindowException, WebDriverException):
+        pass
+
+def autoscroll_burst(driver, container, ms: int):
+    try:
+        driver.execute_async_script("""
+            const box = arguments[0];
+            const dur = arguments[1] | 0;
+            const done = arguments[2];
+            const step = () => {
+                box.scrollTop = Math.min(box.scrollTop + box.clientHeight * 1.35, box.scrollHeight);
+            };
+            const t0 = performance.now();
+            let rafId = 0;
+            const tick = () => {
+                step();
+                if ((performance.now() - t0) < dur &&
+                    (box.scrollTop + box.clientHeight + 4) < box.scrollHeight) {
+                    rafId = requestAnimationFrame(tick);
+                } else {
+                    cancelAnimationFrame(rafId);
+                    done(box.scrollTop);
+                }
+            };
+            requestAnimationFrame(tick);
+        """, container, ms)
+    except (NoSuchWindowException, WebDriverException):
+        pass
+
+def expand_all_visible(driver, scope=None):
+    root = scope if scope is not None else driver
+    try:
+        for b in root.find_elements(By.CSS_SELECTOR, "span.business-review-view__expand"):
+            try:
+                driver.execute_script("arguments[0].click();", b)
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+# --- сортировка: «По новизне»
+def set_sort_newest_yamaps(driver, attempts: int = 3) -> bool:
+    def _open():
+        try:
+            btn = WebDriverWait(driver, 8).until(
+                EC.element_to_be_clickable((By.CSS_SELECTOR, "div.rating-ranking-view"))
+            )
+            driver.execute_script("arguments[0].scrollIntoView({block:'center'});", btn)
+            driver.execute_script("arguments[0].click();", btn)
+            return btn
+        except Exception:
+            return None
+
+    def _pick():
+        xps = [
+            "//*[normalize-space(text())='По новизне']",
+            "//*[@role='menuitem' or @role='option'][normalize-space(.)='По новизне']",
+            "//div[contains(@class,'menu') or contains(@class,'popup')]//*[normalize-space(text())='По новизне']",
+        ]
+        for xp in xps:
+            try:
+                el = WebDriverWait(driver, 6).until(EC.presence_of_element_located((By.XPATH, xp)))
+                driver.execute_script("arguments[0].scrollIntoView({block:'center'});", el)
+                try:
+                    driver.execute_script("arguments[0].click();", el)
+                except Exception:
+                    try:
+                        ActionChains(driver).move_to_element(el).pause(0.05).click().perform()
+                    except Exception:
+                        continue
+                return True
+            except Exception:
+                continue
+        return False
+
+    def _ok():
+        try:
+            WebDriverWait(driver, 6).until(
+                EC.text_to_be_present_in_element(
+                    (By.CSS_SELECTOR, "div.rating-ranking-view span"), "По новизне"
+                )
+            )
+            return True
+        except Exception:
+            try:
+                txts = driver.execute_script("""
+                    var b = document.querySelector('div.rating-ranking-view');
+                    if(!b) return '';
+                    return Array.from(b.querySelectorAll('span')).map(s=>s.textContent.trim()).join(' ');
+                """)
+                return "По новизне" in (txts or "")
+            except Exception:
+                return False
+
+    for _ in range(attempts):
+        btn = _open()
+        if not btn:
+            continue
+        if not _pick():
+            continue
+        if _ok():
+            return True
+    return False
+
+def extract_review(review_el, driver):
+    author = ""
+    try:
+        author = review_el.find_element(By.CSS_SELECTOR, 'a.business-review-view__link span[itemprop="name"]').text.strip()
+    except Exception:
+        try:
+            author = review_el.find_element(By.CSS_SELECTOR, "span[itemprop='name']").text.strip()
         except Exception:
             pass
+
+    rating = None
+    try:
+        rating_el = review_el.find_element(By.CSS_SELECTOR, "div.business-rating-badge-view__stars")
+        rating = parse_rating(rating_el.get_attribute("aria-label") or "")
+    except Exception:
+        pass
+
+    date_raw, date_iso = "", None
+    try:
+        date_raw = review_el.find_element(By.CSS_SELECTOR, "span.business-review-view__date span").text.strip()
+        date_iso = parse_ru_date_to_iso(date_raw)
+    except Exception:
+        pass
+
+    text = ""
+    try:
+        text = review_el.find_element(By.CSS_SELECTOR, "div.spoiler-view__text span.spoiler-view__text-container").text.strip()
+    except Exception:
+        try:
+            text = review_el.find_element(By.CSS_SELECTOR, "[itemprop='reviewBody'], .business-review-view__text").text.strip()
+        except Exception:
+            pass
+
+    return {"author": author, "rating": rating, "date_raw": date_raw, "date_iso": date_iso, "text": text}
+
+def collect_visible_batch(driver, seen: set, out: list, cutoff_date) -> tuple[int, bool]:
+    """
+    Собираем видимые карточки (только с НЕпустым текстом).
+    Возвращаем (сколько добавили, встретили_старый_отзыв_bool).
+    Добавляем только те, у которых дата >= cutoff_date.
+    """
+    added = 0
+    met_old = False
+    cards = driver.find_elements(By.CSS_SELECTOR, "div.business-review-view")
+    for c in cards:
+        try:
+            expand_all_visible(driver, c)
+            item = extract_review(c, driver)
+
+            # обязательно наличие текста
+            if not (item.get("text") or "").strip():
+                continue
+
+            # дата обязательна
+            d_iso = item.get("date_iso")
+            if not d_iso:
+                continue
+            try:
+                d = datetime.fromisoformat(d_iso[:10]).date()
+            except Exception:
+                continue
+
+            if d < cutoff_date:
+                met_old = True
+                continue  # старые НЕ добавляем
+
+            key = (item["author"], item["date_raw"], (item["text"] or "")[:80])
+            if key not in seen:
+                seen.add(key)
+                out.append(item)
+                added += 1
+        except Exception:
+            pass
+    return added, met_old
+
+def extract_organization_from_url(url: str) -> str:
+    try:
+        path = urlparse(url).path  # /maps/org/avtolotsman/1694054504/reviews/
+        m = re.search(r"/org/([^/]+)/", path)
+        if m:
+            return unquote(m.group(1))
+    except Exception:
+        pass
     return ""
 
-def looks_like_review(rec: Dict[str, str]) -> bool:
-    text = (rec.get("text") or "").strip()
-    if not text:
-        return False
-    if AD_TRASH.search(text):
-        return False
-    return True
-
-def save_csv(rows: List[Dict[str, str]], path: str):
-    with open(path, "w", encoding="utf-8-sig", newline="") as f:
-        w = csv.DictWriter(f, fieldnames=["author","rating","date_raw","date_iso","text"])
-        w.writeheader()
-        for r in rows:
-            w.writerow(r)
-    print(f"[OK] Сохранено {len(rows)} отзывов в {path}")
-
-
-# -------------------- Драйвер Я.Браузера --------------------
-
-def build_driver(browser_path: str, driver_path: str, headless: bool=False) -> Tuple[webdriver.Chrome, str]:
-    if not os.path.isfile(browser_path):
-        raise FileNotFoundError(f"Не найден браузер: {browser_path}")
-    if not os.path.isfile(driver_path):
-        raise FileNotFoundError(f"Не найден драйвер: {driver_path}")
-
-    opts = webdriver.ChromeOptions()
-    opts.binary_location = browser_path
-
-    # стабильный старт (фикс DevToolsActivePort / SSL -101 и т.п.)
-    opts.add_argument("--remote-debugging-port=0")
-    opts.add_argument("--disable-gpu")
-    opts.add_argument("--disable-extensions")
-    opts.add_argument("--disable-quic")
-    opts.add_argument("--proxy-server=direct://")
-    opts.add_argument("--proxy-bypass-list=*")
-    opts.add_argument("--ignore-certificate-errors")
-    opts.add_argument("--allow-running-insecure-content")
-    opts.add_argument("--no-first-run")
-    opts.add_argument("--no-default-browser-check")
-    opts.add_argument("--disable-blink-features=AutomationControlled")
-    opts.add_argument("--lang=ru-RU,ru")
-    opts.add_argument("--start-maximized")
-    if headless:
-        opts.add_argument("--headless=new")
-
-    # чистый временный профиль — меньше шансов на краш
-    tmp_profile = tempfile.mkdtemp(prefix="yab_profile_")
-    opts.add_argument(fr"--user-data-dir={tmp_profile}")
-
-    service = Service(driver_path)
-    driver = webdriver.Chrome(service=service, options=opts)
-
-    # скрыть webdriver и ускорить сеть
+def process_one_url(url: str) -> list[dict]:
+    """
+    Возвращает список отзывов по ссылке (с учётом фильтра по дате), уже
+    дополненных полем 'organization'.
+    Каждый URL обрабатываем в отдельной сессии браузера для устойчивости.
+    """
+    driver = setup_driver()
     try:
-        driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {
-            "source": "Object.defineProperty(navigator,'webdriver',{get:()=>undefined});"
-        })
-        driver.execute_cdp_cmd("Network.enable", {})
-        driver.execute_cdp_cmd("Network.setCacheDisabled", {"cacheDisabled": True})
-    except Exception:
-        pass
+        if not safe_get(driver, url):
+            driver.quit()
+            driver = setup_driver()
+            if not safe_get(driver, url):
+                return []
 
-    return driver, tmp_profile
+        # иногда окно падает на загрузке — проверим
+        if not ensure_window(driver):
+            driver.quit()
+            return []
 
+        # ждём хотя бы одну карточку
+        WebDriverWait(driver, WAIT_TIMEOUT).until(
+            EC.presence_of_element_located((By.CSS_SELECTOR, "div.business-review-view"))
+        )
 
-# -------------------- Парсинг DOM без классов --------------------
+        inject_perf_css(driver)
 
-def expand_more(driver):
-    # «Читать целиком»/«Ещё» на разных страницах
-    xps = [
-        '//button[contains(normalize-space(.),"Читать целиком")]',
-        '//button[contains(normalize-space(.),"Показать ещё")]',
-        '//button[contains(normalize-space(.),"Ещё")]',
-        '//div[@role="button"][contains(normalize-space(.),"Ещё")]',
-        '//button[contains(., "Read more")]',
-        '//a[contains(normalize-space(.),"Читать целиком")]',
-    ]
-    for xp in xps:
-        btns = driver.find_elements(By.XPATH, xp)
-        for b in btns:
-            try:
-                if b.is_displayed():
-                    driver.execute_script("arguments[0].click();", b)
-                    time.sleep(0.15)
-            except Exception:
-                pass
+        # организация
+        current = driver.current_url or url
+        organization = extract_organization_from_url(current)
 
-def smooth_scroll(driver, steps=3, dy=1000):
-    for _ in range(steps):
-        driver.execute_script("window.scrollBy(0, arguments[0]);", dy)
-        time.sleep(0.25)
+        # сортировка «По новизне»
+        set_sort_newest_yamaps(driver)
 
-def guess_review_blocks(driver) -> List:
-    """
-    Ищем «карточки» по текстовым маркерам, не по классам:
-    - в карточке почти всегда есть «Полезно» (кнопка) и/или «Читать целиком»;
-    - рядом с автором бывает строка «N отзыв/отзыва/отзывов».
-    """
-    # 1) сначала большие контейнеры, где внутри встречается «Полезно»
-    blocks = driver.find_elements(
-        By.XPATH,
-        '//div[.//text()[contains(., "Полезно")] or .//text()[contains(., "Читать целиком")]]'
-    )
-    # 2) плюс любые <article> с «Полезно»
-    blocks += driver.find_elements(By.XPATH, '//article[.//text()[contains(., "Полезно")]]')
+        container = get_scroll_container(driver)
 
-    # чуть почистим дубли (по веб-элементам Selenium сравнение не работает — оставим как есть)
-    return blocks
+        cutoff_date = datetime.now().date() - timedelta(days=365*YEARS_LIMIT)
 
-def extract_from_block(block) -> Optional[Dict[str, str]]:
-    raw = (block.text or "").strip()
-    if not raw:
-        return None
+        seen, results = set(), []
+        idle = 0
+        stop_by_age = False
 
-    # Разбиваем на строки и чистим явный мусор
-    lines = [x.strip() for x in raw.splitlines() if x.strip()]
-    if not lines:
-        return None
+        expand_all_visible(driver)
+        _, met_old = collect_visible_batch(driver, seen, results, cutoff_date)
+        if met_old:
+            stop_by_age = True
 
-    # 1) Автор — ищем строку вида «Имя Фамилия ... N отзыв»
-    author = ""
-    for i, ln in enumerate(lines[:4]):  # как правило, в первых строках
-        if re.search(r"\b\d+\s+отзыв", ln, re.I) or re.search(r"\b\d+\s+отзыва", ln, re.I) or re.search(r"\b\d+\s+отзывов", ln, re.I):
-            # имя автора — всё, что до «N отзыв»
-            author = re.sub(r"\s*\b\d+\s+отзыв(а|ов)?\b.*", "", ln, flags=re.I).strip()
-            # иногда впереди инициалы «АШ», «АГ» — отрежем, если это 2 заглавные
-            author = re.sub(r"^[А-ЯЁ]{1,2}\s+", "", author)
-            break
-    if not author:
-        # fallback: возьмём первую информативную строку, где нет «Полезно/Читать»
-        for ln in lines[:5]:
-            if ("Полезно" not in ln) and ("Читать" not in ln) and (len(ln.split()) >= 2):
-                author = ln.strip()
+        for _ in range(BURSTS):
+            if stop_by_age:
+                break
+            prev_len = len(results)
+            autoscroll_burst(driver, container, BURST_MS)
+            expand_all_visible(driver)
+            added, met_old = collect_visible_batch(driver, seen, results, cutoff_date)
+            if met_old:
+                stop_by_age = True
+
+            if added == 0 and len(results) == prev_len:
+                idle += 1
+            else:
+                idle = 0
+            if idle >= IDLE_LIMIT:
                 break
 
-    # 2) Дата — ищем по русскому формату или «Сегодня/Вчера»
-    date_raw = ""
-    for ln in lines:
-        if DATE_RE.search(ln) or ln.lower() in ("сегодня","вчера"):
-            date_raw = ln.strip()
-            break
-    date_iso = ru_date_to_iso(date_raw) if date_raw else ""
+        # приклеим organization
+        for r in results:
+            r["organization"] = organization
 
-    # 3) Рейтинг — на 2ГИС не всегда есть звёзды в карточке; попытаемся вытащить из aria-label/текста
-    rating = ""
-    try:
-        rate_el = None
-        for xp in [
-            './/*[@aria-label[contains(., "из 5")]]',
-            './/*[@title[contains(., "из 5")]]',
-            './/*[contains(., "из 5")]'
-        ]:
-            els = block.find_elements(By.XPATH, xp)
-            if els:
-                rate_el = els[0]
-                break
-        if rate_el:
-            txt = (rate_el.get_attribute("aria-label") or rate_el.get_attribute("title") or rate_el.text or "").strip()
-            m = re.search(r'(\d+(?:[.,]\d+)?)\s*из\s*5', txt)
-            if m:
-                rating = m.group(1).replace(',', '.')
-    except Exception:
-        pass
+        print(f"  собрано: {len(results)} | org={organization or '-'}")
+        return results
 
-    # 4) Текст — всё между автором и «Полезно/Читать целиком»
-    # Возьмём весь текст и выкинем явные служебные строки
-    body_lines = []
-    for ln in lines:
-        if any(x in ln for x in ("Полезно","Читать целиком","С ответами","Положительные","Отрицательные")):
-            continue
-        if re.search(r"\b\d+\s+отзыв", ln, re.I):  # строка автора с числом отзывов — пропускаем
-            continue
-        body_lines.append(ln)
-    # Часто первая строка — автор, вторая — уже текст. Подрежем шапку если совпадает с автором
-    if author and body_lines and author in body_lines[0]:
-        body_lines = body_lines[1:]
-    text = " ".join(body_lines).strip()
-
-    rec = {"author": author, "rating": rating, "date_raw": date_raw, "date_iso": date_iso, "text": text}
-    if not looks_like_review(rec):
-        return None
-    return rec
-
-
-def scrape_reviews(driver, max_rounds: int = 80) -> List[Dict[str, str]]:
-    out: List[Dict[str, str]] = []
-    seen = set()
-
-    for _ in range(max_rounds):
-        smooth_scroll(driver, steps=2, dy=1200)
-        expand_more(driver)
-        time.sleep(0.2)
-
-        blocks = guess_review_blocks(driver)
-        for b in blocks:
-            try:
-                rec = extract_from_block(b)
-            except Exception:
-                rec = None
-            if not rec:
-                continue
-            key = (rec["author"].lower(), rec["date_raw"].lower(), rec["text"][:40].lower())
-            if key in seen:
-                continue
-            seen.add(key)
-            out.append(rec)
-
-        # если карточек немного и список не растёт — можно завершать
-        if len(out) >= 3:  # для текущей карточки 2ГИС действительно 3 отзыва
-            break
-
-    return out
-
-
-# -------------------- main --------------------
+    except (NoSuchWindowException, WebDriverException, TimeoutException):
+        return []
+    finally:
+        try:
+            driver.quit()
+        except Exception:
+            pass
 
 def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--url", default=DEFAULT_URL, help="Ссылка на вкладку отзывов 2ГИС")
-    ap.add_argument("--browser", default=DEFAULT_BROWSER, help="Путь к YandexBrowser browser.exe")
-    ap.add_argument("--driver",  default=DEFAULT_DRIVER,  help="Путь к yandexdriver.exe")
-    ap.add_argument("--headless", action="store_true", help="Headless режим")
-    ap.add_argument("--rounds", type=int, default=80, help="Максимум циклов прокрутки")
-    ap.add_argument("--out", default="2gis_reviews.csv", help="CSV для сохранения")
-    args = ap.parse_args()
-
-    driver, tmp_profile = build_driver(args.browser, args.driver, args.headless)
+    # читаем список ссылок; если файла нет — используем fallback
     try:
-        driver.get(args.url)
-        WebDriverWait(driver, 25).until(EC.presence_of_element_located((By.TAG_NAME, "body")))
-        ActionChains(driver).move_by_offset(5, 5).perform()
-        time.sleep(0.8)
+        urls = [u.strip() for u in Path(YAMAPS_URLS_FILE).read_text(encoding="utf-8").splitlines() if u.strip()]
+        if not urls:
+            urls = [FALLBACK_URL]
+    except FileNotFoundError:
+        urls = [FALLBACK_URL]
 
-        # иногда полезно щёлкнуть по вкладке «Отзывы», если не активна
-        for xp in ['//a[contains(normalize-space(.),"Отзывы")]', '//button[contains(normalize-space(.),"Отзывы")]']:
-            tabs = driver.find_elements(By.XPATH, xp)
-            for t in tabs:
-                try:
-                    if t.is_displayed():
-                        driver.execute_script("arguments[0].click();", t)
-                        time.sleep(0.2)
-                        break
-                except Exception:
-                    pass
+    all_rows = []
+    for i, url in enumerate(urls, 1):
+        print(f"[{i}/{len(urls)}] {url}")
+        all_rows.extend(process_one_url(url))
 
-        rows = scrape_reviews(driver, max_rounds=args.rounds)
-        # небольшой постпроцесс рейтинга
-        for r in rows:
-            if r["rating"]:
-                try:
-                    r["rating"] = float(r["rating"])
-                except Exception:
-                    pass
+    # -------- CSV: "rating","author","date_iso","text","platform","organization"
+    Path(OUT_CSV).parent.mkdir(parents=True, exist_ok=True)
+    with open(OUT_CSV, "w", newline="", encoding="utf-8") as f:
+        fieldnames = ["rating","author","date_iso","text","platform","organization"]
+        w = csv.DictWriter(f, fieldnames=fieldnames, quoting=csv.QUOTE_ALL)
+        w.writeheader()
+        for r in all_rows:
+            date_iso = (r.get("date_iso") or "")
+            row = {
+                "rating":       r.get("rating"),
+                "author":       (r.get("author") or "").strip(),
+                "date_iso":     date_iso[:10],
+                "text":         (r.get("text") or "").replace("\r", " ").replace("\n", " ").strip(),
+                "platform":     "Yandex Maps",
+                "organization": (r.get("organization") or "").strip(),
+            }
+            w.writerow(row)
 
-        save_csv(rows, args.out)
-
-    finally:
-        driver.quit()
-        if tmp_profile and os.path.isdir(tmp_profile):
-            try:
-                shutil.rmtree(tmp_profile, ignore_errors=True)
-            except Exception:
-                pass
-
+    print(f"Готово. Всего строк: {len(all_rows)}. CSV: {OUT_CSV}")
 
 if __name__ == "__main__":
     main()

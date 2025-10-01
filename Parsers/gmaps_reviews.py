@@ -4,6 +4,7 @@ import re, time, csv, calendar
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
 from datetime import datetime, timedelta
+from typing import Optional
 
 from selenium import webdriver
 from selenium.webdriver.chrome.service import Service
@@ -16,9 +17,9 @@ from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import NoSuchWindowException, WebDriverException, TimeoutException
 
 # ====== НАСТРОЙКИ ======
-DRIVER_PATH   = r"E:/YandexDriver/yandexdriver.exe"   # версия драйвера = мажорная версия YandexBrowser
-YANDEX_BINARY = r"C:\Program Files\Yandex\YandexBrowser\Application\browser.exe"
-URLS_FILE     = "./Urls/gmaps_urls.txt"
+DRIVER_PATH   = "drivers/yandexdriver"  # поменять для windows
+YANDEX_BINARY = "/Applications/Yandex.app/Contents/MacOS/Yandex" # поменять для windows
+URLS_FILE     = "Urls/gmaps_urls.txt"
 OUT_CSV       = "Csv/gmaps_reviews.csv"
 
 FIRST_WAIT    = 12
@@ -80,7 +81,7 @@ def _apply_delta(now: datetime, unit: str, n: int) -> datetime:
     if unit == 'years':   return _subtract_years(now, n)
     return now
 
-def normalize_relative_ru(text: str, now: datetime | None = None) -> str | None:
+def normalize_relative_ru(text: str, now: Optional[datetime] = None) -> Optional[str]:
     """
     '4 года назад' -> 'YYYY-MM-DD'
     '2 недели назад' -> 'YYYY-MM-DD'
