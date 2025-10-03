@@ -42,7 +42,7 @@ WAIT_TIMEOUT        = 20
 BURSTS              = 30
 BURST_MS            = 1100
 IDLE_LIMIT          = 3
-YEARS_LIMIT         = 3
+YEARS_LIMIT         = 2
 ENFORCE_DATE_CUTOFF = False
 
 # ===== 2ГИС СЕЛЕКТОРЫ =====
@@ -456,17 +456,26 @@ def extract_review_from_card(card, driver) -> dict:
 
     date_raw, date_iso = "", ""
     try:
-        date_el = card.find_element(By.CSS_SELECTOR, DATE_SEL)
-        date_raw = (date_el.text or "").strip()
-        date_iso = parse_ru_date_to_iso(date_raw) or ""
-        if not date_iso:
-            try:
-                time_el = date_el.find_element(By.CSS_SELECTOR, "time")
-                dt = (time_el.get_attribute("datetime") or "").strip()
-                if dt:
-                    date_iso = dt[:10]
-            except:
-                pass
+        # Берём дату из шапки карточки, не из "официального ответа"
+        date_els = card.find_elements(
+            By.XPATH,
+            ".//div[contains(@class,'_m80g57y')]//div[contains(@class,'_a5f6uz')][not(ancestor::*[contains(@class,'_sgs1pz')])]"
+        )
+        if not date_els:
+            # страховка — старый селектор, если разметка поменялась
+            date_els = card.find_elements(By.CSS_SELECTOR, DATE_SEL)
+
+        if date_els:
+            date_raw = (date_els[0].text or "").strip()
+            date_iso = parse_ru_date_to_iso(date_raw) or ""
+            if not date_iso:
+                try:
+                    time_el = date_els[0].find_element(By.CSS_SELECTOR, "time")
+                    dt = (time_el.get_attribute("datetime") or "").strip()
+                    if dt:
+                        date_iso = dt[:10]
+                except:
+                    pass
     except:
         pass
 
@@ -513,53 +522,12 @@ def extract_organization(driver) -> str:
         return ""
 
 def find_review_cards(driver):
-    cards = []
+    # Каждый отзыв — это div._1k5soqfl
     try:
-        main = driver.find_elements(By.CSS_SELECTOR, "article, [data-qa='review-card'], ._qvsf7z")
-        cards.extend(main)
+        return driver.find_elements(By.CSS_SELECTOR, "div._1k5soqfl")
     except:
-        pass
-    try:
-        anchors = driver.find_elements(By.CSS_SELECTOR, TEXT_BLOCK_SEL)
-        anchors += driver.find_elements(By.CSS_SELECTOR, ALT_TEXT_SEL)
-        for a in anchors:
-            try:
-                parent = a
-                for _ in range(6):
-                    parent = parent.find_element(By.XPATH, "./..")
-                if parent not in cards:
-                    cards.append(parent)
-            except:
-                continue
-    except:
-        pass
-    try:
-        date_elements = driver.find_elements(By.CSS_SELECTOR, DATE_SEL)
-        for date_el in date_elements:
-            try:
-                parent = date_el
-                for _ in range(5):
-                    parent = parent.find_element(By.XPATH, "./..")
-                if parent not in cards:
-                    cards.append(parent)
-            except:
-                continue
-    except:
-        pass
-    try:
-        rating_elements = driver.find_elements(By.CSS_SELECTOR, RATING_FILL_SEL)
-        for rating_el in rating_elements:
-            try:
-                parent = rating_el
-                for _ in range(4):
-                    parent = parent.find_element(By.XPATH, "./..")
-                if parent not in cards:
-                    cards.append(parent)
-            except:
-                continue
-    except:
-        pass
-    return cards
+        return []
+
 
 def _coarse_key(author: str, text: str) -> Tuple[str, str]:
     a = (author or "").strip().lower()
