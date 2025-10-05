@@ -1,8 +1,8 @@
-# gmaps_reviews.py — «Сначала новые», только отзывы с текстом и не старше 2 лет
+# gmaps_reviews.py — один проход + «Сначала новые»
 # -*- coding: utf-8 -*-
 import re, time, csv, calendar
 from pathlib import Path
-from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
+from urllib.parse import urlparse, parse_qs, urlencode, urlunparse, unquote
 from datetime import datetime, timedelta
 from typing import Optional
 
@@ -11,21 +11,27 @@ from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.common.by import By
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.action_chains import ActionChains
-from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import NoSuchWindowException, WebDriverException, TimeoutException
 
 # ====== НАСТРОЙКИ ======
-DRIVER_PATH   = "drivers/yandexdriver"  # поменять для windows
-YANDEX_BINARY = "/Applications/Yandex.app/Contents/MacOS/Yandex" # поменять для windows
-URLS_FILE     = "Urls/gmaps_urls.txt"
-OUT_CSV       = "Csv/gmaps_reviews.csv"
+DRIVER_PATH    = "drivers/yandexdriver"  # для Windows укажи свой путь
+YANDEX_BINARY  = "/Applications/Yandex.app/Contents/MacOS/Yandex"
+URLS_FILE      = "Urls/gmaps_urls.txt"
 
-FIRST_WAIT    = 12
-SHORT_WAIT    = 3
-SCROLL_ROUNDS = 80      # общий лимит итераций скролла (останавливаемся раньше по дате)
-SCROLL_PAUSE  = 0.6
+OUT_CSV_REV    = "Csv/Reviews/gmaps_reviews.csv"   # детальные отзывы (только с текстом и ≤ 2 лет)
+OUT_CSV_SUM    = "Csv/Summary/gmaps_summary.csv"   # summary по организации
+
+FIRST_WAIT     = 12
+SHORT_WAIT     = 2
+SCROLL_PAUSE   = 0.6
+SCROLL_HARD_LIMIT = 600
+
+CUTOFF_YEARS   = 3
+PLATFORM       = "Google Maps"
+
+ORG = "avtolotsman"
 
 # ====== СЕЛЕКТОРЫ ======
 REVIEWS_CONTAINER_CANDIDATES = [
@@ -36,11 +42,16 @@ REVIEWS_CONTAINER_CANDIDATES = [
 ]
 REVIEW_CARD_CSS      = "div.jftiEf.fontBodyMedium"
 REVIEW_CARD_FALLBACK = "div.jftiEf"
-AUTHOR_CSS           = ".d4r55.fontTitleMedium"
-RATING_CSS           = ".kvMYJc"
-DATE_CSS             = ".rsqaWe"
-TEXT_CSS             = ".wiI7pd"
-EXPAND_BTN_CSS       = "button.w8nwRe.kyuRq"
+
+AUTHOR_CSS = ".d4r55.fontTitleMedium"
+RATING_CSS = ".kvMYJc"
+DATE_CSS   = ".rsqaWe"
+TEXT_CSS   = ".wiI7pd"
+EXPAND_BTN_CSS = "button.w8nwRe.kyuRq"
+
+# summary
+RATING_BIG_CSS  = "div.fontDisplayLarge"         # 4,4
+COUNT_SMALL_CSS = "div.fontBodySmall"            # Отзывов: 522
 
 # ====== ДАТЫ ======
 def _last_day_of_month(year: int, month: int) -> int:
@@ -82,11 +93,6 @@ def _apply_delta(now: datetime, unit: str, n: int) -> datetime:
     return now
 
 def normalize_relative_ru(text: str, now: Optional[datetime] = None) -> Optional[str]:
-    """
-    '4 года назад' -> 'YYYY-MM-DD'
-    '2 недели назад' -> 'YYYY-MM-DD'
-    'месяц назад', 'год назад', 'вчера', 'сегодня' — поддерживаются.
-    """
     if not text: return None
     s = text.strip().lower()
     now = now or datetime.now()
@@ -119,7 +125,6 @@ def normalize_relative_ru(text: str, now: Optional[datetime] = None) -> Optional
 
 # ====== УТИЛЫ ======
 def add_hl_ru(url: str) -> str:
-    """Принудительно включаем русскую локаль у Google Maps."""
     try:
         u = urlparse(url); q = parse_qs(u.query); q["hl"] = ["ru"]
         return urlunparse((u.scheme, u.netloc, u.path, u.params,
@@ -133,20 +138,6 @@ def parse_rating(raw: str):
     m = re.search(r'([0-5](?:[.,]\d)?)', raw)
     return float(m.group(1).replace(',', '.')) if m else None
 
-def click_all_reviews(drv):
-    XPATHS = [
-        "//button[contains(., 'Все отзывы')]", "//a[contains(., 'Все отзывы')]",
-        "//button[contains(., 'Отзывы')]",     "//a[contains(., 'Отзывы')]",
-        "//button[contains(., 'All reviews')]", "//a[contains(., 'All reviews')]",
-    ]
-    for xp in XPATHS:
-        try:
-            WebDriverWait(drv, 4).until(EC.element_to_be_clickable((By.XPATH, xp))).click()
-            return True
-        except Exception:
-            pass
-    return False
-
 def accept_cookies_if_any(drv):
     for xp in ["//button[contains(., 'Принять')]",
                "//button[contains(., 'Accept')]",
@@ -157,10 +148,24 @@ def accept_cookies_if_any(drv):
         except Exception:
             pass
 
+def click_all_reviews(drv):
+    XPATHS = [
+        "//button[contains(., 'Все отзывы')]", "//a[contains(., 'Все отзывы')]",
+        "//button[contains(., 'Отзывы')]",     "//a[contains(., 'Отзывы')]",
+        "//button[contains(., 'All reviews')]", "//a[contains(., 'All reviews')]",
+    ]
+    for xp in XPATHS:
+        try:
+            WebDriverWait(drv, 6).until(EC.element_to_be_clickable((By.XPATH, xp))).click()
+            return True
+        except Exception:
+            pass
+    return False
+
 def find_reviews_container(drv):
     for css in REVIEWS_CONTAINER_CANDIDATES:
         try:
-            el = WebDriverWait(drv, 8).until(EC.presence_of_element_located((By.CSS_SELECTOR, css)))
+            el = WebDriverWait(drv, 10).until(EC.presence_of_element_located((By.CSS_SELECTOR, css)))
             return el
         except Exception:
             continue
@@ -172,11 +177,64 @@ def safe_scroll_js(drv, script, *args):
     except (NoSuchWindowException, WebDriverException):
         return False
 
+def organization_from_url_or_title(drv, url: str) -> str:
+    try:
+        path = urlparse(url).path  # /maps/place/<name>/...
+        m = re.search(r"/place/([^/]+)", path)
+        if m:
+            slug = unquote(m.group(1)).replace("+", " ").strip()
+            slug = slug.split("@", 1)[0].strip()
+            return slug
+    except Exception:
+        pass
+    try:
+        title = (drv.title or "")
+        title = re.split(r"– Google", title)[0].strip()
+        return title
+    except Exception:
+        return ""
+
+# ====== SUMMARY (rating_avg, ratings_count) ======
+def extract_summary_gmaps(drv) -> tuple[Optional[float], Optional[int]]:
+    rating_avg = None
+    try:
+        el = WebDriverWait(drv, 8).until(EC.presence_of_element_located((By.CSS_SELECTOR, RATING_BIG_CSS)))
+        rating_avg = parse_rating(el.text)
+    except Exception:
+        try:
+            for el in drv.find_elements(By.CSS_SELECTOR, RATING_BIG_CSS):
+                rating_avg = parse_rating(el.text)
+                if rating_avg is not None: break
+        except Exception:
+            pass
+
+    ratings_count = None
+    try:
+        for el in drv.find_elements(By.CSS_SELECTOR, COUNT_SMALL_CSS):
+            txt = (el.text or "").replace("\xa0", " ").strip()
+            m = re.search(r'(Отзывов|Reviews)\s*:\s*([\d\s]+)', txt, flags=re.I)
+            if m:
+                try:
+                    ratings_count = int(m.group(2).replace(" ", ""))
+                    break
+                except Exception:
+                    continue
+    except Exception:
+        pass
+
+    if ratings_count is None:
+        try:
+            html = drv.page_source
+            m = re.search(r'(?:Отзывов|Reviews)\s*:\s*([\d\s]+)', html, flags=re.I)
+            if m:
+                ratings_count = int(m.group(1).replace("\u202f", "").replace(" ", ""))
+        except Exception:
+            pass
+
+    return rating_avg, ratings_count
+
+# ====== «Сначала новые» ======
 def set_sort_newest(drv, attempts: int = 3) -> bool:
-    """
-    Открывает меню сортировки и выбирает «Сначала новые».
-    Возвращает True, если получилось (aria-label у кнопки сменился).
-    """
     def _open_menu():
         btn_xpaths = [
             "//button[@aria-label='Самые релевантные']",
@@ -258,7 +316,6 @@ def set_sort_newest(drv, attempts: int = 3) -> bool:
 
 # ====== Парс одной карточки ======
 def extract_card_fields(c):
-    # раскрыть «Ещё» в карточке
     for b in c.find_elements(By.CSS_SELECTOR, EXPAND_BTN_CSS):
         try:
             if b.is_displayed() and b.is_enabled():
@@ -305,35 +362,41 @@ def extract_card_fields(c):
         "text": text,
     }
 
-# ====== Инкрементальный сбор с остановкой по сроку ======
-def harvest_reviews_newest(drv, container, cutoff_date):
-    seen = set()
-    rows = []
+# ====== ЕДИНЫЙ ПРОХОД ======
+def one_pass_collect(drv, container, cutoff_date, w_rev, org: str) -> int:
+    seen_text_keys = set()
+    seen_recent_keys = set()
 
-    for _ in range(SCROLL_ROUNDS):
-        # раскрываем «Ещё» для всех видимых
+    last_h = -1
+    same_h_iters = 0
+    rounds = 0
+
+    while rounds < SCROLL_HARD_LIMIT:
+        rounds += 1
+
         for b in container.find_elements(By.CSS_SELECTOR, EXPAND_BTN_CSS):
             try:
                 if b.is_displayed() and b.is_enabled(): b.click()
             except Exception:
                 pass
 
-        cards = container.find_elements(By.CSS_SELECTOR, REVIEW_CARD_CSS)
-        if not cards:
-            cards = container.find_elements(By.CSS_SELECTOR, REVIEW_CARD_FALLBACK)
+        cards = container.find_elements(By.CSS_SELECTOR, REVIEW_CARD_CSS) \
+                or container.find_elements(By.CSS_SELECTOR, REVIEW_CARD_FALLBACK)
 
-        stop = False
         for c in cards:
             try:
                 item = extract_card_fields(c)
             except Exception:
                 continue
 
-            # только отзывы с текстом
-            if not item.get("text"):
+            txt = (item.get("text") or "").strip()
+            if not txt:
                 continue
 
-            # дата обязателна и должна быть не старше cutoff
+            key_all = (item.get("author") or "", txt[:120])
+            if key_all not in seen_text_keys:
+                seen_text_keys.add(key_all)
+
             d_iso = item.get("date_iso")
             if not d_iso:
                 continue
@@ -342,41 +405,40 @@ def harvest_reviews_newest(drv, container, cutoff_date):
             except Exception:
                 continue
 
-            if d < cutoff_date:
-                stop = True
-                break
+            if d >= cutoff_date:
+                key_recent = (item.get("author") or "", item.get("date_text") or "", txt[:120])
+                if key_recent not in seen_recent_keys:
+                    seen_recent_keys.add(key_recent)
+                    w_rev.writerow({
+                        "rating":       item.get("rating"),
+                        "author":       (item.get("author") or "").strip(),
+                        "date_iso":     d.isoformat(),
+                        "text":         txt.replace("\r", " ").replace("\n", " ").strip(),
+                        "platform":     PLATFORM,
+                        "organization": org,
+                    })
 
-            key = (item.get("author"), item.get("date_text"), (item.get("text") or "")[:80])
-            if key in seen:
-                continue
-            seen.add(key)
-
-            rows.append({
-                "rating":    item.get("rating"),
-                "author":    item.get("author") or "",
-                "date_text": item.get("date_text") or "",
-                "date_iso":  d.isoformat(),
-                "text":      item.get("text") or "",
-                "platform":  "Google Maps",
-            })
-
-        if stop:
+        try:
+            h = drv.execute_script("return arguments[0].scrollHeight;", container)
+            drv.execute_script("arguments[0].scrollTop = arguments[0].scrollHeight;", container)
+        except Exception:
             break
 
-        # прокручиваем контейнер вниз
-        if not safe_scroll_js(
-            drv,
-            "arguments[0].scrollTop = Math.min(arguments[0].scrollTop + arguments[0].clientHeight*0.95, arguments[0].scrollHeight);",
-            container
-        ):
+        if h == last_h:
+            same_h_iters += 1
+        else:
+            same_h_iters = 0
+        last_h = h
+
+        if same_h_iters >= 3:
             break
+
         time.sleep(SCROLL_PAUSE)
 
-    return rows
+    return len(seen_text_keys)
 
 # ====== MAIN ======
 def main():
-    # браузер: YandexBrowser + yandexdriver
     opts = Options()
     opts.binary_location = YANDEX_BINARY
     opts.add_argument("--disable-blink-features=AutomationControlled")
@@ -388,8 +450,7 @@ def main():
     drv = webdriver.Chrome(service=Service(DRIVER_PATH), options=opts)
 
     try:
-        caps = drv.capabilities
-        print("Browser:", caps.get("browserName"), "Version:", caps.get("browserVersion"))
+        print("Browser:", drv.capabilities.get("browserName"), "Version:", drv.capabilities.get("browserVersion"))
     except Exception:
         pass
 
@@ -398,8 +459,15 @@ def main():
     except FileNotFoundError:
         urls = []
 
-    all_rows = []
-    cutoff_date = (datetime.now().date() - timedelta(days=365*3))  # 2 года назад
+    Path(OUT_CSV_REV).parent.mkdir(parents=True, exist_ok=True)
+    f_rev = open(OUT_CSV_REV, "w", newline="", encoding="utf-8")
+    f_sum = open(OUT_CSV_SUM, "w", newline="", encoding="utf-8")
+    w_rev = csv.DictWriter(f_rev, fieldnames=["rating","author","date_iso","text","platform","organization"], quoting=csv.QUOTE_ALL)
+    w_sum = csv.DictWriter(f_sum, fieldnames=["organization","platform","rating_avg","ratings_count","reviews_count"], quoting=csv.QUOTE_ALL)
+    w_rev.writeheader()
+    w_sum.writeheader()
+
+    cutoff_date = (datetime.now().date() - timedelta(days=365*CUTOFF_YEARS))
 
     try:
         for i, base in enumerate(urls, 1):
@@ -411,41 +479,47 @@ def main():
 
             accept_cookies_if_any(drv)
             click_all_reviews(drv)
-            time.sleep(1.5)
+            time.sleep(1.2)
 
-            # ставим «Сначала новые»
+            # <<< СНАЧАЛА НОВЫЕ >>>
             set_sort_newest(drv)
-            time.sleep(0.8)
+            time.sleep(0.6)
+
+            rating_avg, ratings_count = extract_summary_gmaps(drv)
 
             container = find_reviews_container(drv)
             if not container:
-                # запасной контейнер
-                container = drv.find_element(By.TAG_NAME, "body")
+                click_all_reviews(drv)
+                container = find_reviews_container(drv)
+                if not container:
+                    print("  не найден контейнер отзывов, пропускаю")
+                    w_sum.writerow({
+                        "organization": ORG,
+                        "platform": PLATFORM,
+                        "rating_avg": rating_avg if rating_avg is not None else "",
+                        "ratings_count": ratings_count if ratings_count is not None else "",
+                        "reviews_count": ""
+                    })
+                    continue
 
-            rows = harvest_reviews_newest(drv, container, cutoff_date)
-            print(f"  собрано отзывов (<=2 года): {len(rows)}")
-            all_rows.extend(rows)
+            total_text_reviews = one_pass_collect(drv, container, cutoff_date, w_rev, ORG)
+
+            w_sum.writerow({
+                "organization": ORG,
+                "platform":     PLATFORM,
+                "rating_avg":   rating_avg if rating_avg is not None else "",
+                "ratings_count":ratings_count if ratings_count is not None else "",
+                "reviews_count":total_text_reviews,
+            })
+
+            print(f"  summary: rating={rating_avg}, оценок={ratings_count}, текстовых отзывов={total_text_reviews}")
     finally:
         try: drv.quit()
         except Exception: pass
+        f_rev.close()
+        f_sum.close()
 
-    # --- запись CSV: всё в кавычках, без have_text
-    Path(OUT_CSV).parent.mkdir(parents=True, exist_ok=True)
-    with open(OUT_CSV, "w", newline="", encoding="utf-8") as f:
-        fieldnames = ["rating","author","date_iso","text","platform","organization"]
-        w = csv.DictWriter(f, fieldnames=fieldnames, quoting=csv.QUOTE_ALL)
-        w.writeheader()
-        for r in all_rows:
-            w.writerow({
-                "rating":    r.get("rating"),
-                "author":    (r.get("author") or "").strip(),
-                "date_iso":  (r.get("date_iso") or "")[:10],
-                "text":      (r.get("text") or "").replace("\r", " ").replace("\n", " ").strip(),
-                "platform":  "Google Maps",
-                "organization": "avtolotsman"
-            })
-
-    print(f"Готово. Всего строк: {len(all_rows)}. Файл: {OUT_CSV}")
+    print(f"Готово. Reviews → {OUT_CSV_REV} | Summary → {OUT_CSV_SUM}")
 
 if __name__ == "__main__":
     main()
