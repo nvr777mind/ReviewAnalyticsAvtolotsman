@@ -35,7 +35,9 @@ YANDEXDRIVER_PATH     = "drivers/yandexdriver"
 PROFILE_DIR           = str(Path.home() / ".yandex-2gis-scraper")
 
 # ===== ВЫХОД =====
-OUT_CSV = "Csv/2gis_reviews.csv"
+OUT_CSV = "Csv/Reviews/2gis_reviews.csv"
+# >>> ДОБАВЛЕНО: summary по каждой ссылке
+OUT_CSV_SUMMARY = "Csv/Summary/2gis_summary.csv"
 
 # ===== ПАРАМЕТРЫ =====
 WAIT_TIMEOUT        = 20
@@ -56,6 +58,11 @@ ALT_TEXT_SEL     = "div._49x36f > a._1msln3t"   # Развёрнутый тек�
 
 # ЯВНЫЙ СКРОЛЛ-КОНТЕЙНЕР
 SCROLL_CONTAINER_SEL = "div._1rkbbi0x[data-scroll='true']"
+
+# >>> ДОБАВЛЕНО: селекторы summary
+SUM_RATING_SEL        = "div._1tam240"            # пример: 3.7
+SUM_RATINGS_COUNT_SEL = "div._1y88ofn"            # пример: "4 оценки"
+SUM_REVIEWS_COUNT_SEL = "div._qvsf7z > span._1xhlznaa"  # строго по этому пути
 
 # ===== СООТВЕТСТВИЕ URL (firm id) → НУЖНЫЙ СЛАГ ОРГАНИЗАЦИИ =====
 ORGANIZATION_MAP_FIRMID: Dict[str, str] = {
@@ -528,7 +535,6 @@ def find_review_cards(driver):
     except:
         return []
 
-
 def _coarse_key(author: str, text: str) -> Tuple[str, str]:
     a = (author or "").strip().lower()
     t = re.sub(r"\s+", " ", (text or "")).strip().lower()
@@ -577,7 +583,83 @@ def collect_visible_batch(driver, seen_unused: set, out: list, cutoff_date, dedu
             continue
     return added, met_old
 
-def process_one_url(url: str, forced_org: Optional[str] = None) -> List[Dict]:
+# >>> ДОБАВЛЕНО: сбор summary (rating_avg, ratings_count, reviews_count)
+def _textnum_to_int(s: Optional[str]) -> Optional[int]:
+    if not s: return None
+    t = s.replace("\xa0", " ")
+    m = re.search(r"(\d[\d\s]*)", t)
+    if not m: return None
+    try:
+        return int(m.group(1).replace(" ", ""))
+    except Exception:
+        return None
+
+def _text_to_float(s: Optional[str]) -> Optional[float]:
+    if not s: return None
+    t = s.strip().replace("\xa0", " ")
+    m = re.search(r"(\d+[,\.\u202F]\d+|\d+)", t)
+    if not m: return None
+    try:
+        return float(m.group(1).replace("\u202f", "").replace(",", "."))
+    except Exception:
+        return None
+    
+def _nz(v, zero=0):
+    return v if v not in (None, "") else zero
+
+def extract_summary_2gis(driver) -> Tuple[Optional[float], Optional[int], Optional[int]]:
+    """
+    rating_avg: div._1tam240
+    ratings_count: div._1y88ofn  (например "4 оценки")
+    reviews_count: строго span._1xhlznaa, который лежит ПОД div._qvsf7z
+    """
+    try:
+        driver.switch_to.default_content()
+    except:
+        pass
+
+    rating_avg = ratings_count = reviews_count = None
+
+    # рейтинг
+    try:
+        el = driver.find_elements(By.CSS_SELECTOR, SUM_RATING_SEL)
+        if el:
+            rating_avg = _text_to_float(el[0].text)
+    except:
+        pass
+
+    # всего оценок
+    try:
+        els = driver.find_elements(By.CSS_SELECTOR, SUM_RATINGS_COUNT_SEL)
+        for e in els:
+            n = _textnum_to_int(e.text)
+            if n is not None:
+                ratings_count = n
+                break
+    except:
+        pass
+
+    # всего отзывов — строго по пути div._qvsf7z > span._1xhlznaa
+    try:
+        el = driver.find_elements(By.CSS_SELECTOR, SUM_REVIEWS_COUNT_SEL)
+        if el:
+            reviews_count = _textnum_to_int(el[0].text)
+    except:
+        pass
+
+    # Fallback через HTML с жёстким путём (если вдруг не нашлось визуально)
+    if reviews_count is None:
+        try:
+            html = driver.page_source
+            m = re.search(r'<div class="_qvsf7z"[^>]*>.*?<span class="_1xhlznaa">\s*([\d\s]+)\s*</span>', html, re.S)
+            if m:
+                reviews_count = int(m.group(1).replace("\u202f", "").replace(" ", ""))
+        except:
+            pass
+
+    return rating_avg, ratings_count, reviews_count
+
+def process_one_url(url: str, forced_org: Optional[str] = None, summary_writer: Optional[csv.DictWriter] = None) -> List[Dict]:
     driver = setup_driver()
     try:
         if not safe_get(driver, url):
@@ -590,13 +672,31 @@ def process_one_url(url: str, forced_org: Optional[str] = None) -> List[Dict]:
         inject_perf_css(driver)
         time.sleep(3)
 
-        # Организация: по карте из URL → слаг; иначе фолбэк из страницы
+        # Организация
         org = forced_org or org_from_url(url) or ""
         if not org:
             try:
                 org = extract_organization(driver) or ""
             except:
                 org = ""
+
+        # >>> ДОБАВЛЕНО: summary до переключений во фреймы/табы
+        try:
+            rating_avg, ratings_count, reviews_count = extract_summary_2gis(driver)
+            if summary_writer is not None:
+                summary_writer.writerow({
+                    "organization": org,
+                    "platform":     "2GIS",
+                    "rating_avg":   _nz(rating_avg, 0),
+                    "ratings_count":_nz(ratings_count, 0),
+                    "reviews_count":_nz(reviews_count, 0),
+                })
+        except Exception:
+            if summary_writer is not None:
+                summary_writer.writerow({
+                    "organization": org, "platform": "2GIS",
+                    "rating_avg": 0, "ratings_count": 0, "reviews_count": 0
+                })
 
         try: click_cookies_if_any(driver)
         except: pass
@@ -662,11 +762,23 @@ def main():
         urls = [FALLBACK_URL]
 
     all_rows: List[Dict] = []
+
+    # >>> ДОБАВЛЕНО: подготовка summary CSV
+    Path(OUT_CSV_SUMMARY).parent.mkdir(parents=True, exist_ok=True)
+    f_sum = open(OUT_CSV_SUMMARY, "w", newline="", encoding="utf-8")
+    w_sum = csv.DictWriter(f_sum, fieldnames=["organization","platform","rating_avg","ratings_count","reviews_count"], quoting=csv.QUOTE_ALL)
+    w_sum.writeheader()
+
     for i, url in enumerate(urls, 1):
         org_slug = org_from_url(url) or ""  # берём из карты по firm id
         print(f"[{i}/{len(urls)}] {url}  -> org='{org_slug or '-'}'")
-        reviews = process_one_url(url, forced_org=org_slug)
+        reviews = process_one_url(url, forced_org=org_slug, summary_writer=w_sum)  # <<< передаём writer
         all_rows.extend(reviews)
+
+    try:
+        f_sum.close()
+    except:
+        pass
 
     Path(OUT_CSV).parent.mkdir(parents=True, exist_ok=True)
     with open(OUT_CSV, "w", newline="", encoding="utf-8") as f:
@@ -682,7 +794,7 @@ def main():
                 "platform":     "2GIS",
                 "organization": (r.get("organization") or "").strip(),
             })
-    print(f"Готово. Всего строк: {len(all_rows)}. CSV: {OUT_CSV}")
+    print(f"Готово. Всего отзывов: {len(all_rows)}. CSV отзывов: {OUT_CSV}\nSummary: {OUT_CSV_SUMMARY}")
 
 if __name__ == "__main__":
     main()
