@@ -30,7 +30,7 @@ IN_FILES = [
 ]
 
 # ---- выходной путь
-OUT_FILE = Path("Csv/Summary/merged_summary.csv")
+OUT_FILE = Path("Csv/Summary/all_summary.csv")
 
 # ---- вспомогалки
 PLATFORM_ORDER = {
