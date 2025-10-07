@@ -5,7 +5,7 @@ import csv, sys, re, math
 from pathlib import Path
 from collections import Counter
 
-DEFAULT_CSV = "Csv/all_reviews.csv"
+DEFAULT_CSV = "Csv/Reviews/all_reviews.csv"
 TEXT_COL = "text"
 SENT_COL = "sentiment"
 RATING_COL = "rating"   # используется ТОЛЬКО для обучения Байеса (>=4 → pos, <=2 → neg)

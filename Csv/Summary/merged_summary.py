@@ -1,23 +1,4 @@
 # -*- coding: utf-8 -*-
-"""
-merged_summary.py
-Склеивает платформенные summary из:
-  - Csv/yamaps_summary.csv
-  - Csv/gmaps_summary.csv
-  - Csv/2gis_summary.csv
-в один файл:
-  - Csv/merged_summary.csv
-
-Схема колонок сохраняется:
-  "organization","platform","rating_avg","ratings_count","reviews_count"
-
-Правила:
-- Отсутствующие файлы тихо пропускаются.
-- Пустые значения числовых колонок -> 0 (int/float).
-- Дубликаты по (organization, platform) — оставляем последнюю встретившуюся строку.
-- Сортировка в выходе: organization (A→Я), затем platform в порядке:
-  Yandex Maps, Google Maps, 2GIS, затем прочие.
-"""
 
 import csv
 from pathlib import Path

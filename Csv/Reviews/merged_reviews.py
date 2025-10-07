@@ -5,11 +5,11 @@ import csv
 from pathlib import Path
 
 INPUTS = [
-    "Csv/2gis_reviews.csv",
-    "Csv/gmaps_reviews.csv",
-    "Csv/yamaps_reviews.csv",
+    "Csv/Reviews/2gis_reviews.csv",
+    "Csv/Reviews/gmaps_reviews.csv",
+    "Csv/Reviews/yamaps_reviews.csv",
 ]
-OUT = "Csv/all_reviews.csv"
+OUT = "Csv/Reviews/all_reviews.csv"
 
 def main():
     out_path = Path(OUT)
