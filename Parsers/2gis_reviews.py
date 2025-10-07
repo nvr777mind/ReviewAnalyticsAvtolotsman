@@ -9,6 +9,10 @@ from typing import Optional, Tuple, List, Set, Dict
 from datetime import datetime, timedelta
 from pathlib import Path
 
+import warnings
+from urllib3.exceptions import NotOpenSSLWarning
+warnings.filterwarnings("ignore", category=NotOpenSSLWarning)
+
 from selenium import webdriver
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.common.by import By

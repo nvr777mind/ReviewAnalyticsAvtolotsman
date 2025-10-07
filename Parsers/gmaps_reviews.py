@@ -6,6 +6,10 @@ from urllib.parse import urlparse, parse_qs, urlencode, urlunparse, unquote
 from datetime import datetime, timedelta
 from typing import Optional
 
+import warnings
+from urllib3.exceptions import NotOpenSSLWarning
+warnings.filterwarnings("ignore", category=NotOpenSSLWarning)
+
 from selenium import webdriver
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.common.by import By

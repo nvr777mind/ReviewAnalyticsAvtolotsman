@@ -1,22 +1,14 @@
 # -*- coding: utf-8 -*-
-"""
-Единый парсер Яндекс.Карт:
-1) Сначала собирает summary → Csv/yamaps_summary.csv
-   ("organization","platform","rating_avg","ratings_count","reviews_count")
-2) Потом со страницы этой же организации парсит отзывы → Csv/yamaps_reviews.csv
-   ("rating","author","date_iso","text","platform","organization")
-
-Оба шага выполняются в одном окне Яндекс.Браузера, без лишних перезапусков.
-
-Зависимости:
-  pip install selenium
-"""
 
 import csv
 import re
 from datetime import datetime, timedelta
 from pathlib import Path
 from urllib.parse import urlparse, unquote
+
+import warnings
+from urllib3.exceptions import NotOpenSSLWarning
+warnings.filterwarnings("ignore", category=NotOpenSSLWarning)
 
 from selenium import webdriver
 from selenium.webdriver.chrome.service import Service
