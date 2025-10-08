@@ -235,8 +235,8 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("Reviews Viewer")
         self.resize(1200, 800)
 
-        self.FILTERS_WIDTH_RATIO = 0.5  # 50% ширины окна
-        self.FILTERS_MIN_W = 480       # разумный минимум, чтобы не схлопывалось
+        self.FILTERS_WIDTH_RATIO = 0.5
+        self.FILTERS_MIN_W = 480
 
         self.table = QTableView()
         self.table.setSortingEnabled(True)
@@ -286,7 +286,7 @@ class MainWindow(QMainWindow):
         self._date_from.setDate(self._date_from.minimumDate())
         self._date_to.setDate(self._date_to.minimumDate())
 
-        # -------- Контейнер фильтров (сверху, но ширина = 50%) --------
+        # -------- Контейнер фильтров --------
         self._filters_group = QGroupBox("Фильтры")
         self._filters_group.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
 
@@ -294,7 +294,11 @@ class MainWindow(QMainWindow):
         apply_btn = QPushButton("Применить фильтры")
         clear_btn = QPushButton("Сбросить фильтры")
         export_btn = QPushButton("Экспорт отфильтрованного…")
-        run_all_btn = QPushButton("Собрать данные заново")  # в правом верхнем углу внутри контейнера
+        run_all_btn = QPushButton("Собрать данные заново")
+
+        # ▼ сводка (белым)
+        self._stats_label = QLabel("Отфильтровано: — | Средний рейтинг: —")
+        self._stats_label.setStyleSheet("color: #ffffff; padding: 2px 0;")
 
         # стили
         apply_btn.setStyleSheet("""
@@ -380,7 +384,7 @@ class MainWindow(QMainWindow):
         date_w.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
         fl.addRow(QLabel("Дата (date_iso):"), date_w)
 
-        # Кнопки применить/сброс/экспорт
+        # Кнопки применить/сброс
         btns_top = QHBoxLayout()
         btns_top.setContentsMargins(0, 0, 0, 0)
         btns_top.addWidget(apply_btn)
@@ -388,6 +392,7 @@ class MainWindow(QMainWindow):
         btns_top.addSpacing(12)
         btns_top.addStretch(1)
 
+        # Кнопка экспорта (ниже сводки)
         btns_export = QHBoxLayout()
         btns_export.setContentsMargins(0, 0, 0, 0)
         btns_export.addWidget(export_btn)
@@ -403,20 +408,21 @@ class MainWindow(QMainWindow):
         filters_vbox = QVBoxLayout()
         filters_vbox.setContentsMargins(9, 12, 9, 9)
         filters_vbox.setSpacing(8)
-        filters_vbox.addLayout(header_row)  # кнопка справа сверху
+        filters_vbox.addLayout(header_row)
         filters_vbox.addLayout(fl)
         filters_vbox.addLayout(btns_top)
-        filters_vbox.addLayout(btns_export)
+        filters_vbox.addWidget(self._stats_label)      # ← сводка ПЕРЕД экспортом
+        filters_vbox.addLayout(btns_export)            # ← экспорт под сводкой
         filters_vbox.addWidget(self._log)
         self._filters_group.setLayout(filters_vbox)
 
-        # ---- Верхняя строка окна: группа фильтров (50% ширины) + пустое пространство справа ----
+        # ---- Верхняя строка окна ----
         top_row = QHBoxLayout()
         top_row.setContentsMargins(0, 0, 0, 0)
         top_row.addWidget(self._filters_group)
-        top_row.addStretch(1)  # пустое место до края окна
+        top_row.addStretch(1)
 
-        # ---- Основной вертикальный лэйаут: сверху top_row, снизу таблица ----
+        # ---- Основной вертикальный лэйаут ----
         central = QWidget()
         cl = QVBoxLayout(central)
         cl.setContentsMargins(6, 6, 6, 6)
@@ -454,14 +460,13 @@ class MainWindow(QMainWindow):
         else:
             self.autoload_csv()
 
-        # начальная подгонка ширины фильтров под 50%
+        # начальная подгонка ширины фильтров
         self._adjust_filters_width()
 
+    # ---------- Сервис: ширина группы фильтров ----------
     def _adjust_filters_width(self):
-        """Делает ширину контейнера фильтров ≈ 50% ширины центральной области."""
         cw = self.centralWidget().width() if self.centralWidget() else self.width()
         target = max(self.FILTERS_MIN_W, int(cw * self.FILTERS_WIDTH_RATIO))
-        # Не даём выйти за пределы окна
         target = min(target, max(self.FILTERS_MIN_W, cw - 40))
         self._filters_group.setFixedWidth(target)
 
@@ -487,6 +492,14 @@ class MainWindow(QMainWindow):
         self._model = DataFrameModel(df)
         self._proxy = ReviewFilterProxyModel(self._model)
         self.table.setModel(self._proxy)
+
+        # обновлять сводку при изменениях
+        self._proxy.modelReset.connect(self._update_stats_label)
+        self._proxy.layoutChanged.connect(self._update_stats_label)
+        self._proxy.rowsInserted.connect(lambda *_: self._update_stats_label())
+        self._proxy.rowsRemoved.connect(lambda *_: self._update_stats_label())
+        self._proxy.dataChanged.connect(lambda *_: self._update_stats_label())
+
         self._populate_filter_values(df)
 
         # индексы колонок для раскладки
@@ -505,6 +518,7 @@ class MainWindow(QMainWindow):
         self._date_to.setDate(self._date_to.minimumDate())
 
         self._apply_column_layout()
+        self._update_stats_label()  # первичный расчёт
 
     def _populate_filter_values(self, df: pd.DataFrame):
         def fill_combo(combo: QComboBox, col_names):
@@ -544,6 +558,7 @@ class MainWindow(QMainWindow):
                                      self._spin_value_or_none(self._rmax))
         self._proxy.set_date_range(self._dateedit_to_dt(self._date_from),
                                    self._dateedit_to_dt(self._date_to))
+        self._update_stats_label()
 
     def clear_filters(self):
         if not self._proxy:
@@ -556,17 +571,52 @@ class MainWindow(QMainWindow):
         self._date_to.setDate(self._date_to.minimumDate())
         self.apply_filters()
 
-    # ---- Экспорт ----
-    def export_filtered(self):
+    # ---- Текущая выборка и сводка ----
+    def _current_filtered_dataframe(self) -> Optional[pd.DataFrame]:
         if not self._proxy:
-            return
+            return None
         src_model: DataFrameModel = self._proxy.sourceModel()
         df = src_model.get_dataframe()
         rows = []
         for r in range(self._proxy.rowCount()):
             src_row = self._proxy.mapToSource(self._proxy.index(r, 0)).row()
             rows.append(df.iloc[src_row])
-        out_df = pd.DataFrame(rows, columns=df.columns)
+        if not rows:
+            return pd.DataFrame(columns=df.columns)
+        return pd.DataFrame(rows, columns=df.columns)
+
+    def _update_stats_label(self):
+        try:
+            out_df = self._current_filtered_dataframe()
+            if out_df is None or out_df.empty:
+                self._stats_label.setText("Отфильтровано: 0 | Средний рейтинг: —")
+                return
+
+            ratings = pd.Series(dtype=float)
+            if "rating" in out_df.columns:
+                ratings = pd.to_numeric(
+                    out_df["rating"].astype(str).str.replace(",", ".", regex=False),
+                    errors="coerce"
+                )
+            elif "Рейтинг" in out_df.columns:
+                ratings = pd.to_numeric(
+                    out_df["Рейтинг"].astype(str).str.replace(",", ".", regex=False),
+                    errors="coerce"
+                )
+
+            cnt = len(out_df)
+            mean_txt = f"{ratings.mean():.2f}" if ratings.notna().any() else "—"
+            self._stats_label.setText(f"Отфильтровано: {cnt} | Средний рейтинг: {mean_txt}")
+        except Exception:
+            self._stats_label.setText("Отфильтровано: — | Средний рейтинг: —")
+
+    # ---- Экспорт ----
+    def export_filtered(self):
+        if not self._proxy:
+            return
+        out_df = self._current_filtered_dataframe()
+        if out_df is None:
+            return
 
         out_path = Path("filtered_reviews.csv")
         try:
@@ -585,7 +635,6 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "Уже выполняется", "Пайплайн уже запущен.")
             return
 
-        # --- Подтверждение ---
         reply = QMessageBox.question(
             self,
             "Подтверждение",
@@ -596,7 +645,6 @@ class MainWindow(QMainWindow):
         if reply != QMessageBox.StandardButton.Yes:
             return
 
-        # Проверим наличие скриптов
         missing = [str(p) for _, p in (self.SCRAPER_SCRIPTS + self.MERGE_SCRIPTS) if not p.exists()]
         if missing:
             QMessageBox.critical(self, "Скрипты не найдены",
@@ -608,7 +656,6 @@ class MainWindow(QMainWindow):
         self._scraper_procs.clear()
         self._append_log("=== Старт парсеров (параллельно) ===")
 
-        # Стартуем парсеры параллельно
         for name, path in self.SCRAPER_SCRIPTS:
             proc = QProcess(self)
             proc.setProgram(sys.executable)
