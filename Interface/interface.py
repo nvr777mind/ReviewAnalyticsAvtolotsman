@@ -162,7 +162,7 @@ class ReviewFilterProxyModel(QSortFilterProxyModel):
         if not s:
             return None
         s = s.strip()
-        for fmt in ("%Y-%m-%d", "%Y.%m.%d", "%d.%м.%Y".replace("м","m")):
+        for fmt in ("%Y-%m-%d", "%Y.%m.%d", "%d.%m.%Y"):
             try:
                 return datetime.strptime(s, fmt)
             except Exception:
@@ -292,7 +292,8 @@ class MainWindow(QMainWindow):
 
         # -------- Контейнер фильтров --------
         self._filters_group = QGroupBox("Фильтры")
-        self._filters_group.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+        # ВАЖНО: фиксированная ширина, но вертикально растягивается
+        self._filters_group.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Expanding)
 
         # --- кнопки действий ---
         apply_btn = QPushButton("Применить фильтры")
@@ -300,7 +301,7 @@ class MainWindow(QMainWindow):
         export_btn = QPushButton("Экспорт отфильтрованного…")
         run_all_btn = QPushButton("Собрать данные заново")
 
-        # ▼ стили кнопок (цвета и форма — как раньше)
+        # стили кнопок (цвета и форма)
         apply_btn.setStyleSheet("""
             QPushButton {
                 background-color: #d4edda;
@@ -402,11 +403,12 @@ class MainWindow(QMainWindow):
         btns_export.addWidget(export_btn)
         btns_export.addStretch(1)
 
-        # ЛОГ
+        # ЛОГ (теперь растягиваемый)
         self._log = QPlainTextEdit()
         self._log.setReadOnly(True)
         self._log.setPlaceholderText("Лог выполнения парсеров и объединения…")
-        self._log.setFixedHeight(150)
+        self._log.setMinimumHeight(150)
+        self._log.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
 
         # Внутренний лэйаут группы фильтров
         filters_vbox = QVBoxLayout()
@@ -417,11 +419,13 @@ class MainWindow(QMainWindow):
         filters_vbox.addLayout(btns_top)
         filters_vbox.addWidget(self._stats_label)      # сводка
         filters_vbox.addLayout(btns_export)            # экспорт под сводкой
-        filters_vbox.addWidget(self._log)
+        filters_vbox.addWidget(self._log, 1)           # лог тянется и растит контейнер
         self._filters_group.setLayout(filters_vbox)
 
         # -------- Группа диаграмм (справа) --------
         self._charts_group = QGroupBox("Диаграммы")
+        self._charts_group.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding)
+
         charts_vbox = QVBoxLayout()
         charts_vbox.setContentsMargins(9, 12, 9, 9)
         charts_vbox.setSpacing(8)
@@ -430,6 +434,7 @@ class MainWindow(QMainWindow):
         self._fig_rating = Figure(figsize=(4, 2.8), tight_layout=True)
         self._ax_rating = self._fig_rating.add_subplot(111)
         self._canvas_rating = FigureCanvas(self._fig_rating)
+        self._canvas_rating.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         charts_vbox.addWidget(QLabel("Количество комментариев по рейтингу"))
         charts_vbox.addWidget(self._canvas_rating, 1)
 
@@ -437,11 +442,11 @@ class MainWindow(QMainWindow):
         self._fig_sent = Figure(figsize=(4, 2.8), tight_layout=True)
         self._ax_sent = self._fig_sent.add_subplot(111)
         self._canvas_sent = FigureCanvas(self._fig_sent)
+        self._canvas_sent.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         charts_vbox.addWidget(QLabel("Соотношение отзывов по тональности"))
         charts_vbox.addWidget(self._canvas_sent, 1)
 
         self._charts_group.setLayout(charts_vbox)
-        self._charts_group.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Preferred)
 
         # ---- Верхняя строка окна: слева фильтры, справа диаграммы ----
         top_row = QHBoxLayout()
@@ -508,7 +513,9 @@ class MainWindow(QMainWindow):
         try:
             df = pd.read_csv(csv_path, dtype=str, keep_default_na=False)
             if "rating" in df.columns:
-                df["rating"] = pd.to_numeric(df["rating"].astype(str).str.replace(",", ".", regex=False), errors="coerce")
+                df["rating"] = pd.to_numeric(
+                    df["rating"].astype(str).str.replace(",", ".", regex=False), errors="coerce"
+                )
             self.set_dataframe(df)
             self.statusBar().showMessage(f"Загружено: {csv_path} | строк: {len(df)} | столбцов: {len(df.columns)}")
         except Exception as e:
@@ -550,7 +557,9 @@ class MainWindow(QMainWindow):
     def _populate_filter_values(self, df: pd.DataFrame):
         def fill_combo(combo: QComboBox, col_names):
             combo.clear(); combo.addItem("— Все —")
-            col = next((c for c in ([col_names] if isinstance(col_names, str) else col_names) if c in df.columns), None)
+        # platform
+            col = next((c for c in ([col_names] if isinstance(col_names, str) else col_names)
+                        if c in df.columns), None)
             if col:
                 vals = sorted(set(map(str, df[col].dropna().astype(str))))
                 for v in vals:
@@ -623,17 +632,16 @@ class MainWindow(QMainWindow):
                 self._stats_label.setText("Отфильтровано: 0 | Средний рейтинг: —")
                 return
 
-            ratings = pd.Series(dtype=float)
             if "rating" in out_df.columns:
                 ratings = pd.to_numeric(
-                    out_df["rating"].astype(str).str.replace(",", ".", regex=False),
-                    errors="coerce"
+                    out_df["rating"].astype(str).str.replace(",", ".", regex=False), errors="coerce"
                 )
             elif "Рейтинг" in out_df.columns:
                 ratings = pd.to_numeric(
-                    out_df["Рейтинг"].astype(str).str.replace(",", ".", regex=False),
-                    errors="coerce"
+                    out_df["Рейтинг"].astype(str).str.replace(",", ".", regex=False), errors="coerce"
                 )
+            else:
+                ratings = pd.Series(dtype=float)
 
             cnt = len(out_df)
             mean_txt = f"{ratings.mean():.2f}" if ratings.notna().any() else "—"
@@ -672,10 +680,7 @@ class MainWindow(QMainWindow):
         # --- Диаграмма 2: соотношение тональностей ---
         self._ax_sent.clear()
         if df is not None and not df.empty:
-            sent_col = None
-            for c in ["sentiment", "sentiment_label", "tone", "Тональность"]:
-                if c in df.columns:
-                    sent_col = c; break
+            sent_col = next((c for c in ["sentiment", "sentiment_label", "tone", "Тональность"] if c in df.columns), None)
             if sent_col:
                 counts = df[sent_col].fillna("unknown").astype(str).str.lower().replace({
                     "pos": "positive", "neg": "negative", "neu": "neutral",
