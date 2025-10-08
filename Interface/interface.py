@@ -454,12 +454,45 @@ class MainWindow(QMainWindow):
         top_row.addWidget(self._filters_group)
         top_row.addWidget(self._charts_group, 1)
 
+        # --- Кнопка "Развернуть" над отзывами ---
+        self._expand_btn = QPushButton("Развернуть список отзывов")
+        self._expand_btn.setFixedHeight(common_h)
+        self._expand_btn.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
+
+        # Стили как у "Применить" (зелёный) и "Сбросить" (красный)
+        self._expand_style_collapsed = """
+            QPushButton {
+                background-color: #d4edda;
+                border: 1px solid #c3e6cb;
+                padding: 6px 12px;
+                border-radius: 6px;
+                color: #1b1e21;
+            }
+            QPushButton:hover { background-color: #cfe9d6; }
+            QPushButton:pressed { background-color: #c3e6cb; }
+        """
+        self._expand_style_expanded = """
+            QPushButton {
+                background-color: #f8d7da;
+                border: 1px solid #f5c6cb;
+                padding: 6px 12px;
+                border-radius: 6px;
+                color: #1b1e21;
+            }
+            QPushButton:hover { background-color: #f6cfd3; }
+            QPushButton:pressed { background-color: #f5c6cb; }
+        """
+        # стартуем как "Развернуть" (зелёная)
+        self._expand_btn.setStyleSheet(self._expand_style_collapsed)
+        self._expanded = False  # состояние "развернутости" таблицы
+
         # ---- Основной вертикальный лэйаут ----
         central = QWidget()
         cl = QVBoxLayout(central)
         cl.setContentsMargins(6, 6, 6, 6)
         cl.setSpacing(8)
         cl.addLayout(top_row)
+        cl.addWidget(self._expand_btn)   # ← новая кнопка над таблицей
         cl.addWidget(self.table, 1)
         self.setCentralWidget(central)
 
@@ -468,6 +501,8 @@ class MainWindow(QMainWindow):
         clear_btn.clicked.connect(self.clear_filters)
         export_btn.clicked.connect(self.export_filtered)
         run_all_btn.clicked.connect(self.run_full_pipeline)
+        self._expand_btn.clicked.connect(self._toggle_expand_reviews)
+
 
         # Поля состояния пайплайна
         self._running = False
@@ -837,6 +872,26 @@ class MainWindow(QMainWindow):
     def resizeEvent(self, event):
         super().resizeEvent(event)
         self._adjust_filters_width()
+        self._apply_column_layout()
+
+    def _toggle_expand_reviews(self):
+        """Переключает режим: отзывы на весь экран приложения / обычный вид."""
+        self._expanded = not self._expanded
+        if self._expanded:
+            # Прячем верхние группы, таблица занимает всё доступное пространство
+            self._filters_group.hide()
+            self._charts_group.hide()
+            self._expand_btn.setText("Свернуть список отзывов")
+            self._expand_btn.setStyleSheet(self._expand_style_expanded)  # красный
+        else:
+            # Возвращаем обычный вид
+            self._filters_group.show()
+            self._charts_group.show()
+            self._expand_btn.setText("Развернуть список отзывов")
+            self._expand_btn.setStyleSheet(self._expand_style_collapsed)  # зелёный
+            self._adjust_filters_width()
+
+        # Пересчитать ширины колонок под текущую геометрию
         self._apply_column_layout()
 
 
