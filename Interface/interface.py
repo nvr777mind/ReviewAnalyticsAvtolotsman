@@ -18,6 +18,10 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtGui import QTextOption, QTextDocument, QPainter
 
+# matplotlib (QtAgg для PyQt6)
+from matplotlib.figure import Figure
+from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
+
 
 # ---------- Модель DataFrame → Qt ----------
 class DataFrameModel(QAbstractTableModel):
@@ -158,7 +162,7 @@ class ReviewFilterProxyModel(QSortFilterProxyModel):
         if not s:
             return None
         s = s.strip()
-        for fmt in ("%Y-%m-%d", "%Y.%m.%d", "%d.%m.%Y"):
+        for fmt in ("%Y-%m-%d", "%Y.%m.%d", "%d.%м.%Y".replace("м","m")):
             try:
                 return datetime.strptime(s, fmt)
             except Exception:
@@ -233,7 +237,7 @@ class MainWindow(QMainWindow):
     def __init__(self, df: Optional[pd.DataFrame] = None):
         super().__init__()
         self.setWindowTitle("Reviews Viewer")
-        self.resize(1200, 800)
+        self.resize(1400, 820)
 
         self.FILTERS_WIDTH_RATIO = 0.5
         self.FILTERS_MIN_W = 480
@@ -296,11 +300,7 @@ class MainWindow(QMainWindow):
         export_btn = QPushButton("Экспорт отфильтрованного…")
         run_all_btn = QPushButton("Собрать данные заново")
 
-        # ▼ сводка (белым)
-        self._stats_label = QLabel("Отфильтровано: — | Средний рейтинг: —")
-        self._stats_label.setStyleSheet("color: #ffffff; padding: 2px 0;")
-
-        # стили
+        # ▼ стили кнопок (цвета и форма — как раньше)
         apply_btn.setStyleSheet("""
             QPushButton {
                 background-color: #d4edda;
@@ -334,6 +334,10 @@ class MainWindow(QMainWindow):
             QPushButton:hover { background-color: #cbe7ed; }
             QPushButton:pressed { background-color: #bee5eb; }
         """)
+
+        # сводка (белым)
+        self._stats_label = QLabel("Отфильтровано: — | Средний рейтинг: —")
+        self._stats_label.setStyleSheet("color: #ffffff; padding: 2px 0;")
 
         # --- Унификация высоты контролов ---
         common_h = 28
@@ -404,23 +408,46 @@ class MainWindow(QMainWindow):
         self._log.setPlaceholderText("Лог выполнения парсеров и объединения…")
         self._log.setFixedHeight(150)
 
-        # Внутренний лэйаут группы
+        # Внутренний лэйаут группы фильтров
         filters_vbox = QVBoxLayout()
         filters_vbox.setContentsMargins(9, 12, 9, 9)
         filters_vbox.setSpacing(8)
         filters_vbox.addLayout(header_row)
         filters_vbox.addLayout(fl)
         filters_vbox.addLayout(btns_top)
-        filters_vbox.addWidget(self._stats_label)      # ← сводка ПЕРЕД экспортом
-        filters_vbox.addLayout(btns_export)            # ← экспорт под сводкой
+        filters_vbox.addWidget(self._stats_label)      # сводка
+        filters_vbox.addLayout(btns_export)            # экспорт под сводкой
         filters_vbox.addWidget(self._log)
         self._filters_group.setLayout(filters_vbox)
 
-        # ---- Верхняя строка окна ----
+        # -------- Группа диаграмм (справа) --------
+        self._charts_group = QGroupBox("Диаграммы")
+        charts_vbox = QVBoxLayout()
+        charts_vbox.setContentsMargins(9, 12, 9, 9)
+        charts_vbox.setSpacing(8)
+
+        # Канвас 1: количество по рейтингу
+        self._fig_rating = Figure(figsize=(4, 2.8), tight_layout=True)
+        self._ax_rating = self._fig_rating.add_subplot(111)
+        self._canvas_rating = FigureCanvas(self._fig_rating)
+        charts_vbox.addWidget(QLabel("Количество комментариев по рейтингу"))
+        charts_vbox.addWidget(self._canvas_rating, 1)
+
+        # Канвас 2: доли по тональности
+        self._fig_sent = Figure(figsize=(4, 2.8), tight_layout=True)
+        self._ax_sent = self._fig_sent.add_subplot(111)
+        self._canvas_sent = FigureCanvas(self._fig_sent)
+        charts_vbox.addWidget(QLabel("Соотношение отзывов по тональности"))
+        charts_vbox.addWidget(self._canvas_sent, 1)
+
+        self._charts_group.setLayout(charts_vbox)
+        self._charts_group.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Preferred)
+
+        # ---- Верхняя строка окна: слева фильтры, справа диаграммы ----
         top_row = QHBoxLayout()
         top_row.setContentsMargins(0, 0, 0, 0)
         top_row.addWidget(self._filters_group)
-        top_row.addStretch(1)
+        top_row.addWidget(self._charts_group, 1)
 
         # ---- Основной вертикальный лэйаут ----
         central = QWidget()
@@ -481,7 +508,7 @@ class MainWindow(QMainWindow):
         try:
             df = pd.read_csv(csv_path, dtype=str, keep_default_na=False)
             if "rating" in df.columns:
-                df["rating"] = pd.to_numeric(df["rating"].str.replace(",", ".", regex=False), errors="coerce")
+                df["rating"] = pd.to_numeric(df["rating"].astype(str).str.replace(",", ".", regex=False), errors="coerce")
             self.set_dataframe(df)
             self.statusBar().showMessage(f"Загружено: {csv_path} | строк: {len(df)} | столбцов: {len(df.columns)}")
         except Exception as e:
@@ -493,12 +520,12 @@ class MainWindow(QMainWindow):
         self._proxy = ReviewFilterProxyModel(self._model)
         self.table.setModel(self._proxy)
 
-        # обновлять сводку при изменениях
-        self._proxy.modelReset.connect(self._update_stats_label)
-        self._proxy.layoutChanged.connect(self._update_stats_label)
-        self._proxy.rowsInserted.connect(lambda *_: self._update_stats_label())
-        self._proxy.rowsRemoved.connect(lambda *_: self._update_stats_label())
-        self._proxy.dataChanged.connect(lambda *_: self._update_stats_label())
+        # обновлять сводку/диаграммы при изменениях
+        self._proxy.modelReset.connect(self._on_view_changed)
+        self._proxy.layoutChanged.connect(self._on_view_changed)
+        self._proxy.rowsInserted.connect(lambda *_: self._on_view_changed())
+        self._proxy.rowsRemoved.connect(lambda *_: self._on_view_changed())
+        self._proxy.dataChanged.connect(lambda *_: self._on_view_changed())
 
         self._populate_filter_values(df)
 
@@ -518,7 +545,7 @@ class MainWindow(QMainWindow):
         self._date_to.setDate(self._date_to.minimumDate())
 
         self._apply_column_layout()
-        self._update_stats_label()  # первичный расчёт
+        self._on_view_changed()  # первичный расчёт/отрисовка
 
     def _populate_filter_values(self, df: pd.DataFrame):
         def fill_combo(combo: QComboBox, col_names):
@@ -558,7 +585,7 @@ class MainWindow(QMainWindow):
                                      self._spin_value_or_none(self._rmax))
         self._proxy.set_date_range(self._dateedit_to_dt(self._date_from),
                                    self._dateedit_to_dt(self._date_to))
-        self._update_stats_label()
+        self._on_view_changed()
 
     def clear_filters(self):
         if not self._proxy:
@@ -571,7 +598,7 @@ class MainWindow(QMainWindow):
         self._date_to.setDate(self._date_to.minimumDate())
         self.apply_filters()
 
-    # ---- Текущая выборка и сводка ----
+    # ---- Текущая выборка и сводка/диаграммы ----
     def _current_filtered_dataframe(self) -> Optional[pd.DataFrame]:
         if not self._proxy:
             return None
@@ -584,6 +611,10 @@ class MainWindow(QMainWindow):
         if not rows:
             return pd.DataFrame(columns=df.columns)
         return pd.DataFrame(rows, columns=df.columns)
+
+    def _on_view_changed(self):
+        self._update_stats_label()
+        self._update_charts()
 
     def _update_stats_label(self):
         try:
@@ -609,6 +640,60 @@ class MainWindow(QMainWindow):
             self._stats_label.setText(f"Отфильтровано: {cnt} | Средний рейтинг: {mean_txt}")
         except Exception:
             self._stats_label.setText("Отфильтровано: — | Средний рейтинг: —")
+
+    def _update_charts(self):
+        df = self._current_filtered_dataframe()
+        # --- Диаграмма 1: количество по рейтингу ---
+        self._ax_rating.clear()
+        if df is not None and not df.empty:
+            if "rating" in df.columns:
+                r = pd.to_numeric(df["rating"].astype(str).str.replace(",", ".", regex=False), errors="coerce")
+            elif "Рейтинг" in df.columns:
+                r = pd.to_numeric(df["Рейтинг"].astype(str).str.replace(",", ".", regex=False), errors="coerce")
+            else:
+                r = pd.Series(dtype=float)
+            r = r.dropna()
+            if not r.empty:
+                r_int = r.round().astype(int)
+                counts = r_int.value_counts().sort_index()
+                index = pd.Index([1, 2, 3, 4, 5], dtype=int)
+                counts = counts.reindex(index, fill_value=0)
+                self._ax_rating.bar(counts.index.astype(str), counts.values)
+                self._ax_rating.set_xlabel("Рейтинг")
+                self._ax_rating.set_ylabel("Кол-во отзывов")
+            else:
+                self._ax_rating.text(0.5, 0.5, "Нет данных по рейтингу",
+                                     ha="center", va="center", transform=self._ax_rating.transAxes)
+        else:
+            self._ax_rating.text(0.5, 0.5, "Нет данных",
+                                 ha="center", va="center", transform=self._ax_rating.transAxes)
+        self._canvas_rating.draw()
+
+        # --- Диаграмма 2: соотношение тональностей ---
+        self._ax_sent.clear()
+        if df is not None and not df.empty:
+            sent_col = None
+            for c in ["sentiment", "sentiment_label", "tone", "Тональность"]:
+                if c in df.columns:
+                    sent_col = c; break
+            if sent_col:
+                counts = df[sent_col].fillna("unknown").astype(str).str.lower().replace({
+                    "pos": "positive", "neg": "negative", "neu": "neutral",
+                    "положительная": "positive", "отрицательная": "negative", "нейтральная": "neutral"
+                }).value_counts()
+                if not counts.empty:
+                    self._ax_sent.pie(counts.values, labels=counts.index, autopct="%1.0f%%", startangle=90)
+                    self._ax_sent.axis("equal")
+                else:
+                    self._ax_sent.text(0.5, 0.5, "Нет данных по тональности",
+                                       ha="center", va="center", transform=self._ax_sent.transAxes)
+            else:
+                self._ax_sent.text(0.5, 0.5, "Колонка тональности не найдена",
+                                   ha="center", va="center", transform=self._ax_sent.transAxes)
+        else:
+            self._ax_sent.text(0.5, 0.5, "Нет данных",
+                               ha="center", va="center", transform=self._ax_sent.transAxes)
+        self._canvas_sent.draw()
 
     # ---- Экспорт ----
     def export_filtered(self):
