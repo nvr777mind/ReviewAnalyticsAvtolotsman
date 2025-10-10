@@ -292,7 +292,6 @@ class MainWindow(QMainWindow):
 
         # -------- Контейнер фильтров --------
         self._filters_group = QGroupBox("Фильтры")
-        # ВАЖНО: фиксированная ширина, но вертикально растягивается
         self._filters_group.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Expanding)
 
         # --- кнопки действий ---
@@ -340,15 +339,40 @@ class MainWindow(QMainWindow):
         self._stats_label = QLabel("Отфильтровано: — | Средний рейтинг: —")
         self._stats_label.setStyleSheet("color: #ffffff; padding: 2px 0;")
 
+        # ==== CSV-переключатель ====
+        self._csv_mode = "reviews"  # "reviews" | "summary"
+        self._csv_paths = {
+            "reviews": Path("Csv/Reviews/all_reviews.csv"),
+            "summary": Path("Csv/Summary/all_summary.csv"),
+        }
+
+        # Кнопка "Переключить" + короткая метка "Отзывы/Сводка"
+        self._csv_toggle_btn = QPushButton("Переключить")
+        self._csv_toggle_btn.setToolTip("Переключить между набором Отзывы и Сводка")
+        self._csv_toggle_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #e2e3e5;
+                border: 1px solid #d6d8db;
+                padding: 6px 12px;
+                border-radius: 6px;
+                color: #1b1e21;
+            }
+            QPushButton:hover { background-color: #d8d9db; }
+            QPushButton:pressed { background-color: #d6d8db; }
+        """)
+        self._csv_current_label = QLabel("")
+        self._csv_current_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+
         # --- Унификация высоты контролов ---
         common_h = 28
-        for w in [self._platform_combo, self._org_combo, self._sentiment_combo,
+        for w in [self._csv_toggle_btn,
+                  self._platform_combo, self._org_combo, self._sentiment_combo,
                   self._rmin, self._rmax, self._date_from, self._date_to,
                   apply_btn, clear_btn, export_btn, run_all_btn]:
             w.setFixedHeight(common_h)
             w.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
 
-        # --- Верхняя строка контейнера фильтров: кнопка справа ---
+        # --- Верхняя строка контейнера фильтров ---
         header_row = QHBoxLayout()
         header_row.addStretch(1)
         header_row.addWidget(run_all_btn)
@@ -359,6 +383,16 @@ class MainWindow(QMainWindow):
         fl.setFormAlignment(Qt.AlignmentFlag.AlignLeft)
         fl.setVerticalSpacing(10)
 
+        # Строка с датасетом: СНАЧАЛА МЕТКА, ПОТОМ КНОПКА (как просили)
+        csv_row = QHBoxLayout()
+        csv_row.setContentsMargins(0, 0, 0, 0)
+        csv_row.setSpacing(8)
+        csv_row.addWidget(self._csv_current_label, 1)   # ← метка "Отзывы/Сводка"
+        csv_row.addWidget(self._csv_toggle_btn)         # ← кнопка "Переключить"
+        csv_w = QWidget(); csv_w.setLayout(csv_row)
+        fl.addRow(QLabel("Датасет:"), csv_w)
+
+        # Ниже обычные фильтры
         fl.addRow(QLabel("Платформа:"), self._platform_combo)
         fl.addRow(QLabel("Организация:"), self._org_combo)
         fl.addRow(QLabel("Тональность:"), self._sentiment_combo)
@@ -403,7 +437,7 @@ class MainWindow(QMainWindow):
         btns_export.addWidget(export_btn)
         btns_export.addStretch(1)
 
-        # ЛОГ (теперь растягиваемый)
+        # ЛОГ
         self._log = QPlainTextEdit()
         self._log.setReadOnly(True)
         self._log.setPlaceholderText("Лог выполнения парсеров и объединения…")
@@ -417,9 +451,9 @@ class MainWindow(QMainWindow):
         filters_vbox.addLayout(header_row)
         filters_vbox.addLayout(fl)
         filters_vbox.addLayout(btns_top)
-        filters_vbox.addWidget(self._stats_label)      # сводка
-        filters_vbox.addLayout(btns_export)            # экспорт под сводкой
-        filters_vbox.addWidget(self._log, 1)           # лог тянется и растит контейнер
+        filters_vbox.addWidget(self._stats_label)
+        filters_vbox.addLayout(btns_export)
+        filters_vbox.addWidget(self._log, 1)
         self._filters_group.setLayout(filters_vbox)
 
         # -------- Группа диаграмм (справа) --------
@@ -448,7 +482,7 @@ class MainWindow(QMainWindow):
 
         self._charts_group.setLayout(charts_vbox)
 
-        # ---- Верхняя строка окна: слева фильтры, справа диаграммы ----
+        # ---- Верхняя строка окна ----
         top_row = QHBoxLayout()
         top_row.setContentsMargins(0, 0, 0, 0)
         top_row.addWidget(self._filters_group)
@@ -458,8 +492,6 @@ class MainWindow(QMainWindow):
         self._expand_btn = QPushButton("Развернуть список отзывов")
         self._expand_btn.setFixedHeight(common_h)
         self._expand_btn.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
-
-        # Стили как у "Применить" (зелёный) и "Сбросить" (красный)
         self._expand_style_collapsed = """
             QPushButton {
                 background-color: #d4edda;
@@ -482,9 +514,8 @@ class MainWindow(QMainWindow):
             QPushButton:hover { background-color: #f6cfd3; }
             QPushButton:pressed { background-color: #f5c6cb; }
         """
-        # стартуем как "Развернуть" (зелёная)
         self._expand_btn.setStyleSheet(self._expand_style_collapsed)
-        self._expanded = False  # состояние "развернутости" таблицы
+        self._expanded = False
 
         # ---- Основной вертикальный лэйаут ----
         central = QWidget()
@@ -492,7 +523,7 @@ class MainWindow(QMainWindow):
         cl.setContentsMargins(6, 6, 6, 6)
         cl.setSpacing(8)
         cl.addLayout(top_row)
-        cl.addWidget(self._expand_btn)   # ← новая кнопка над таблицей
+        cl.addWidget(self._expand_btn)
         cl.addWidget(self.table, 1)
         self.setCentralWidget(central)
 
@@ -502,7 +533,7 @@ class MainWindow(QMainWindow):
         export_btn.clicked.connect(self.export_filtered)
         run_all_btn.clicked.connect(self.run_full_pipeline)
         self._expand_btn.clicked.connect(self._toggle_expand_reviews)
-
+        self._csv_toggle_btn.clicked.connect(self._on_toggle_csv)
 
         # Поля состояния пайплайна
         self._running = False
@@ -537,13 +568,17 @@ class MainWindow(QMainWindow):
         target = min(target, max(self.FILTERS_MIN_W, cw - 40))
         self._filters_group.setFixedWidth(target)
 
-    # ---- Автозагрузка all_reviews.csv ----
+    # ---- Автозагрузка текущего CSV по режиму ----
     def autoload_csv(self):
-        candidates = [Path("Csv/Reviews/all_reviews.csv")]
-        csv_path = next((p for p in candidates if p.exists()), None)
-        if not csv_path:
+        target = self._csv_paths.get(self._csv_mode, Path("Csv/Reviews/all_reviews.csv"))
+        self.load_csv(target)
+
+    # ---- Универсальная загрузка CSV ----
+    def load_csv(self, csv_path: Path):
+        if not csv_path.exists():
             QMessageBox.critical(self, "Файл не найден",
-                                 "Не удалось найти all_reviews.csv по пути Csv/Reviews/all_reviews.csv.")
+                                 f"Не удалось найти файл:\n{csv_path}")
+            self._update_csv_label()  # всё равно обновим отображение
             return
         try:
             df = pd.read_csv(csv_path, dtype=str, keep_default_na=False)
@@ -552,9 +587,26 @@ class MainWindow(QMainWindow):
                     df["rating"].astype(str).str.replace(",", ".", regex=False), errors="coerce"
                 )
             self.set_dataframe(df)
-            self.statusBar().showMessage(f"Загружено: {csv_path} | строк: {len(df)} | столбцов: {len(df.columns)}")
+            self.statusBar().showMessage(
+                f"Загружено: {csv_path} | строк: {len(df)} | столбцов: {len(df.columns)}"
+            )
         except Exception as e:
             QMessageBox.critical(self, "Ошибка чтения CSV", str(e))
+        finally:
+            self._update_csv_label()
+
+    # ---- Обработчик "Переключить" ----
+    def _on_toggle_csv(self):
+        self._csv_mode = "summary" if self._csv_mode == "reviews" else "reviews"
+        self.autoload_csv()
+
+    # ---- Обновление метки текущего набора (Отзывы/Сводка) ----
+    def _update_csv_label(self):
+        self._csv_current_label.setText("Отзывы" if self._csv_mode == "reviews" else "Сводка")
+        path = self._csv_paths.get(self._csv_mode)
+        if path is not None:
+            self._csv_current_label.setToolTip(str(path))
+            self._csv_toggle_btn.setToolTip(f"Переключить. Текущий файл: {path}")
 
     # ---- Работа с данными ----
     def set_dataframe(self, df: pd.DataFrame):
@@ -592,7 +644,6 @@ class MainWindow(QMainWindow):
     def _populate_filter_values(self, df: pd.DataFrame):
         def fill_combo(combo: QComboBox, col_names):
             combo.clear(); combo.addItem("— Все —")
-        # platform
             col = next((c for c in ([col_names] if isinstance(col_names, str) else col_names)
                         if c in df.columns), None)
             if col:
@@ -878,20 +929,16 @@ class MainWindow(QMainWindow):
         """Переключает режим: отзывы на весь экран приложения / обычный вид."""
         self._expanded = not self._expanded
         if self._expanded:
-            # Прячем верхние группы, таблица занимает всё доступное пространство
             self._filters_group.hide()
             self._charts_group.hide()
             self._expand_btn.setText("Свернуть список отзывов")
-            self._expand_btn.setStyleSheet(self._expand_style_expanded)  # красный
+            self._expand_btn.setStyleSheet(self._expand_style_expanded)
         else:
-            # Возвращаем обычный вид
             self._filters_group.show()
             self._charts_group.show()
             self._expand_btn.setText("Развернуть список отзывов")
-            self._expand_btn.setStyleSheet(self._expand_style_collapsed)  # зелёный
+            self._expand_btn.setStyleSheet(self._expand_style_collapsed)
             self._adjust_filters_width()
-
-        # Пересчитать ширины колонок под текущую геометрию
         self._apply_column_layout()
 
 
