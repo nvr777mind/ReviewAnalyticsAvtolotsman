@@ -14,7 +14,7 @@ from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QTableView,
     QPushButton, QComboBox, QSpinBox, QGroupBox, QFormLayout, QDateEdit,
     QMessageBox, QStyledItemDelegate, QHeaderView, QLabel, QPlainTextEdit,
-    QSizePolicy,
+    QSizePolicy, QStyleOptionButton, QStyle
 )
 from PyQt6.QtGui import QTextOption, QTextDocument, QPainter
 
@@ -29,6 +29,7 @@ class DataFrameModel(QAbstractTableModel):
         super().__init__()
         self._df = df.reset_index(drop=True)
         self._headers = list(map(str, self._df.columns))
+        self._need_answer_idx: Optional[int] = self.column_name_to_index("need_answer")
 
     def rowCount(self, parent: QModelIndex = QModelIndex()) -> int:
         return 0 if parent.isValid() else len(self._df)
@@ -39,12 +40,47 @@ class DataFrameModel(QAbstractTableModel):
     def data(self, index: QModelIndex, role: int = Qt.ItemDataRole.DisplayRole) -> Any:
         if not index.isValid():
             return QVariant()
+
+        r, c = index.row(), index.column()
+
+        # Чекбокс для need_answer
+        if self._need_answer_idx is not None and c == self._need_answer_idx:
+            if role == Qt.ItemDataRole.CheckStateRole:
+                val = self._df.iat[r, c]
+                checked = str(val).strip().lower() in {"1", "true", "yes", "y", "да"}
+                return Qt.CheckState.Checked if checked else Qt.CheckState.Unchecked
+            if role in (Qt.ItemDataRole.DisplayRole, Qt.ItemDataRole.EditRole):
+                return ""  # текст в ячейке не нужен, только чекбокс
+
         if role in (Qt.ItemDataRole.DisplayRole, Qt.ItemDataRole.EditRole):
-            val = self._df.iat[index.row(), index.column()]
+            val = self._df.iat[r, c]
             if pd.isna(val):
                 return ""
             return str(val)
+
         return QVariant()
+
+    def setData(self, index: QModelIndex, value: Any, role: int = Qt.ItemDataRole.EditRole) -> bool:
+        if not index.isValid():
+            return False
+
+        r, c = index.row(), index.column()
+
+        # Обработка клика по чекбоксу need_answer
+        if self._need_answer_idx is not None and c == self._need_answer_idx and role == Qt.ItemDataRole.CheckStateRole:
+            self._df.iat[r, c] = 1 if value == Qt.CheckState.Checked else 0
+            self.dataChanged.emit(index, index, [Qt.ItemDataRole.CheckStateRole, Qt.ItemDataRole.DisplayRole])
+            return True
+
+        return False
+
+    def flags(self, index: QModelIndex):
+        if not index.isValid():
+            return Qt.ItemFlag.NoItemFlags
+        base = Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable
+        if self._need_answer_idx is not None and index.column() == self._need_answer_idx:
+            return base | Qt.ItemFlag.ItemIsUserCheckable
+        return base
 
     def headerData(self, section: int, orientation: Qt.Orientation,
                    role: int = Qt.ItemDataRole.DisplayRole) -> Any:
@@ -60,6 +96,9 @@ class DataFrameModel(QAbstractTableModel):
             return self._headers.index(name)
         except ValueError:
             return None
+
+    def refresh_need_answer_index(self):
+        self._need_answer_idx = self.column_name_to_index("need_answer")
 
 
 # ---------- Делегат для переносов и авто-высоты текста ----------
@@ -93,6 +132,34 @@ class TextWrapDelegate(QStyledItemDelegate):
         return QSize(width + 12, h)
 
 
+# ---------- Делегат чекбокса для need_answer ----------
+class CheckBoxDelegate(QStyledItemDelegate):
+    def paint(self, painter, option, index):
+        opt = QStyleOptionButton()
+        opt.state |= QStyle.StateFlag.State_Enabled
+        checked = index.data(Qt.ItemDataRole.CheckStateRole) == Qt.CheckState.Checked
+        opt.state |= (QStyle.StateFlag.State_On if checked else QStyle.StateFlag.State_Off)
+        style = option.widget.style() if option.widget else QApplication.style()
+        rect = style.subElementRect(QStyle.SubElement.SE_CheckBoxIndicator, opt, None)
+        opt.rect = rect
+        opt.rect.moveCenter(option.rect.center())
+        style.drawControl(QStyle.ControlElement.CE_CheckBox, opt, painter)
+
+    def editorEvent(self, event, model, option, index):
+        et = event.type()
+        if et == QEvent.Type.MouseButtonRelease or et == QEvent.Type.MouseButtonDblClick:
+            if getattr(event, "button", lambda: None)() != Qt.MouseButton.LeftButton:
+                return False
+        elif et == QEvent.Type.KeyPress:
+            if getattr(event, "key", lambda: None)() not in (Qt.Key.Key_Space, Qt.Key.Key_Select):
+                return False
+        else:
+            return False
+        cur = index.data(Qt.ItemDataRole.CheckStateRole)
+        new_state = Qt.CheckState.Unchecked if cur == Qt.CheckState.Checked else Qt.CheckState.Checked
+        return model.setData(index, new_state, Qt.ItemDataRole.CheckStateRole)
+
+
 # ---------- Прокси с фильтрами ----------
 class ReviewFilterProxyModel(QSortFilterProxyModel):
     def __init__(self, src: DataFrameModel):
@@ -107,6 +174,7 @@ class ReviewFilterProxyModel(QSortFilterProxyModel):
         self._date_from: Optional[datetime] = None
         self._date_to: Optional[datetime] = None
         self._sentiment_exact: Optional[str] = None
+        self._need_answer: Optional[bool] = None
 
         self.col_platform = src.column_name_to_index("platform")
         self.col_org = src.column_name_to_index("organization")
@@ -118,6 +186,7 @@ class ReviewFilterProxyModel(QSortFilterProxyModel):
             or src.column_name_to_index("tone")
             or src.column_name_to_index("Тональность")
         )
+        self.col_need_answer = src.column_name_to_index("need_answer")
 
     def set_platform_filter(self, val: Optional[str]):
         self._platform_exact = val if val and val != "— Все —" else None
@@ -129,6 +198,15 @@ class ReviewFilterProxyModel(QSortFilterProxyModel):
 
     def set_sentiment_filter(self, val: Optional[str]):
         self._sentiment_exact = val if val and val != "— Все —" else None
+        self.invalidateFilter()
+
+    def set_need_answer_filter(self, text: str):
+        if not text or text == "— Все —" or self.col_need_answer is None:
+            self._need_answer = None
+        elif text.lower().startswith("требует"):
+            self._need_answer = True
+        else:
+            self._need_answer = False
         self.invalidateFilter()
 
     def set_rating_range(self, rmin: Optional[float], rmax: Optional[float]):
@@ -172,6 +250,13 @@ class ReviewFilterProxyModel(QSortFilterProxyModel):
         except Exception:
             return None
 
+    @staticmethod
+    def _truthy_need_answer(raw: Optional[str]) -> bool:
+        if raw is None:
+            return False
+        s = str(raw).strip().lower()
+        return s in {"1", "true", "yes", "y", "да"}
+
     def filterAcceptsRow(self, src_row: int, src_parent: QModelIndex) -> bool:
         if self._platform_exact is not None:
             p = self._value(src_row, self.col_platform)
@@ -206,11 +291,33 @@ class ReviewFilterProxyModel(QSortFilterProxyModel):
             if self._date_to is not None and d > self._date_to:
                 return False
 
+        # --- need_answer filter (читаем сырое значение из DataFrame, а не DisplayRole) ---
+        if self._need_answer is not None and self.col_need_answer is not None:
+            src_model: DataFrameModel = self.sourceModel()  # type: ignore
+            raw = src_model.get_dataframe().iat[src_row, self.col_need_answer]
+            is_true = self._truthy_need_answer(raw)
+            if is_true != self._need_answer:
+                return False
+
         return True
+
+    def flags(self, index: QModelIndex):
+        if not index.isValid():
+            return Qt.ItemFlag.NoItemFlags
+        src_idx = self.mapToSource(index)
+        return self.sourceModel().flags(src_idx)
+
+    def setData(self, index: QModelIndex, value, role=Qt.ItemDataRole.EditRole):
+        if not index.isValid():
+            return False
+        src_idx = self.mapToSource(index)
+        ok = self.sourceModel().setData(src_idx, value, role)
+        if ok:
+            self.dataChanged.emit(index, index, [role])
+        return ok
 
 
 class DateEditWithDash(QDateEdit):
-    """QDateEdit, который отображает '—' и открывает календарь на заданном годе/месяце."""
     def __init__(self, start_year=2022, start_month=1, parent=None):
         super().__init__(parent)
         self._start_year = start_year
@@ -250,6 +357,7 @@ class MainWindow(QMainWindow):
         self.table.setTextElideMode(Qt.TextElideMode.ElideNone)
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
         self.table.horizontalHeader().setStretchLastSection(False)
+        self.table.setEditTriggers(QTableView.EditTrigger.AllEditTriggers)
 
         self._model: Optional[DataFrameModel] = None
         self._proxy: Optional[ReviewFilterProxyModel] = None
@@ -259,6 +367,7 @@ class MainWindow(QMainWindow):
         self._col_rating: Optional[int] = None
         self._col_platform: Optional[int] = None
         self._col_org: Optional[int] = None
+        self._col_need_answer: Optional[int] = None
 
         # доли/ширины
         self._text_col_ratio = 0.50
@@ -267,6 +376,7 @@ class MainWindow(QMainWindow):
         self._PLATFORM_W = 90
         self._ORG_MIN = 180
         self._ORG_MAX = 460
+        self._NEED_ANSWER_W = 130
 
         # --- фильтры ---
         self._platform_combo = QComboBox()
@@ -275,6 +385,8 @@ class MainWindow(QMainWindow):
         self._rmin = QSpinBox(); self._rmax = QSpinBox()
         self._date_from = DateEditWithDash(start_year=2022, start_month=1)
         self._date_to   = DateEditWithDash(start_year=2022, start_month=1)
+        self._need_answer_combo = QComboBox()
+        self._need_answer_combo.addItems(["— Все —", "Требует", "Не требует"])
 
         self._rmin.setRange(0, 1000); self._rmax.setRange(0, 1000)
         self._rmin.setSpecialValueText("—"); self._rmax.setSpecialValueText("—")
@@ -300,36 +412,27 @@ class MainWindow(QMainWindow):
         export_btn = QPushButton("Экспорт отфильтрованного…")
         run_all_btn = QPushButton("Собрать данные заново")
 
-        # стили кнопок (цвета и форма)
+        # стили кнопок
         apply_btn.setStyleSheet("""
             QPushButton {
-                background-color: #d4edda;
-                border: 1px solid #c3e6cb;
-                padding: 6px 12px;
-                border-radius: 6px;
-                color: #1b1e21;
+                background-color: #d4edda; border: 1px solid #c3e6cb;
+                padding: 6px 12px; border-radius: 6px; color: #1b1e21;
             }
             QPushButton:hover { background-color: #cfe9d6; }
             QPushButton:pressed { background-color: #c3e6cb; }
         """)
         clear_btn.setStyleSheet("""
             QPushButton {
-                background-color: #f8d7da;
-                border: 1px solid #f5c6cb;
-                padding: 6px 12px;
-                border-radius: 6px;
-                color: #1b1e21;
+                background-color: #f8d7da; border: 1px solid #f5c6cb;
+                padding: 6px 12px; border-radius: 6px; color: #1b1e21;
             }
             QPushButton:hover { background-color: #f6cfd3; }
             QPushButton:pressed { background-color: #f5c6cb; }
         """)
         run_all_btn.setStyleSheet("""
             QPushButton {
-                background-color: #d1ecf1;
-                border: 1px solid #bee5eb;
-                padding: 6px 12px;
-                border-radius: 6px;
-                color: #0c5460;
+                background-color: #d1ecf1; border: 1px solid #bee5eb;
+                padding: 6px 12px; border-radius: 6px; color: #0c5460;
             }
             QPushButton:hover { background-color: #cbe7ed; }
             QPushButton:pressed { background-color: #bee5eb; }
@@ -345,17 +448,15 @@ class MainWindow(QMainWindow):
             "reviews": Path("Csv/Reviews/all_reviews.csv"),
             "summary": Path("Csv/Summary/all_summary.csv"),
         }
+        self._current_csv_path: Optional[Path] = None
 
         # Кнопка "Переключить" + короткая метка "Отзывы/Сводка"
         self._csv_toggle_btn = QPushButton("Переключить")
         self._csv_toggle_btn.setToolTip("Переключить между набором Отзывы и Сводка")
         self._csv_toggle_btn.setStyleSheet("""
             QPushButton {
-                background-color: #e2e3e5;
-                border: 1px solid #d6d8db;
-                padding: 6px 12px;
-                border-radius: 6px;
-                color: #1b1e21;
+                background-color: #e2e3e5; border: 1px solid #d6d8db;
+                padding: 6px 12px; border-radius: 6px; color: #1b1e21;
             }
             QPushButton:hover { background-color: #d8d9db; }
             QPushButton:pressed { background-color: #d6d8db; }
@@ -368,6 +469,7 @@ class MainWindow(QMainWindow):
         for w in [self._csv_toggle_btn,
                   self._platform_combo, self._org_combo, self._sentiment_combo,
                   self._rmin, self._rmax, self._date_from, self._date_to,
+                  self._need_answer_combo,
                   apply_btn, clear_btn, export_btn, run_all_btn]:
             w.setFixedHeight(common_h)
             w.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
@@ -383,12 +485,12 @@ class MainWindow(QMainWindow):
         fl.setFormAlignment(Qt.AlignmentFlag.AlignLeft)
         fl.setVerticalSpacing(10)
 
-        # Строка с датасетом: СНАЧАЛА МЕТКА, ПОТОМ КНОПКА (как просили)
+        # Строка с датасетом
         csv_row = QHBoxLayout()
         csv_row.setContentsMargins(0, 0, 0, 0)
         csv_row.setSpacing(8)
-        csv_row.addWidget(self._csv_current_label, 1)   # ← метка "Отзывы/Сводка"
-        csv_row.addWidget(self._csv_toggle_btn)         # ← кнопка "Переключить"
+        csv_row.addWidget(self._csv_current_label, 1)
+        csv_row.addWidget(self._csv_toggle_btn)
         csv_w = QWidget(); csv_w.setLayout(csv_row)
         fl.addRow(QLabel("Датасет:"), csv_w)
 
@@ -422,6 +524,9 @@ class MainWindow(QMainWindow):
         date_w = QWidget(); date_w.setLayout(date_row)
         date_w.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
         fl.addRow(QLabel("Дата (date_iso):"), date_w)
+
+        # ----- Требует ответа -----
+        fl.addRow(QLabel("Требует ответа:"), self._need_answer_combo)
 
         # Кнопки применить/сброс
         btns_top = QHBoxLayout()
@@ -490,27 +595,17 @@ class MainWindow(QMainWindow):
 
         # --- Кнопка "Развернуть" над отзывами ---
         self._expand_btn = QPushButton("Развернуть список отзывов")
-        self._expand_btn.setFixedHeight(common_h)
+        self._expand_btn.setFixedHeight(28)
         self._expand_btn.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
         self._expand_style_collapsed = """
-            QPushButton {
-                background-color: #d4edda;
-                border: 1px solid #c3e6cb;
-                padding: 6px 12px;
-                border-radius: 6px;
-                color: #1b1e21;
-            }
+            QPushButton { background-color: #d4edda; border: 1px solid #c3e6cb;
+                          padding: 6px 12px; border-radius: 6px; color: #1b1e21; }
             QPushButton:hover { background-color: #cfe9d6; }
             QPushButton:pressed { background-color: #c3e6cb; }
         """
         self._expand_style_expanded = """
-            QPushButton {
-                background-color: #f8d7da;
-                border: 1px solid #f5c6cb;
-                padding: 6px 12px;
-                border-radius: 6px;
-                color: #1b1e21;
-            }
+            QPushButton { background-color: #f8d7da; border: 1px solid #f5c6cb;
+                          padding: 6px 12px; border-radius: 6px; color: #1b1e21; }
             QPushButton:hover { background-color: #f6cfd3; }
             QPushButton:pressed { background-color: #f5c6cb; }
         """
@@ -575,17 +670,23 @@ class MainWindow(QMainWindow):
 
     # ---- Универсальная загрузка CSV ----
     def load_csv(self, csv_path: Path):
+        self._current_csv_path = csv_path
         if not csv_path.exists():
             QMessageBox.critical(self, "Файл не найден",
                                  f"Не удалось найти файл:\n{csv_path}")
-            self._update_csv_label()  # всё равно обновим отображение
+            self._update_csv_label()
             return
         try:
             df = pd.read_csv(csv_path, dtype=str, keep_default_na=False)
+
             if "rating" in df.columns:
                 df["rating"] = pd.to_numeric(
                     df["rating"].astype(str).str.replace(",", ".", regex=False), errors="coerce"
                 )
+
+            if self._csv_mode == "reviews" and "need_answer" not in df.columns:
+                df["need_answer"] = 0
+
             self.set_dataframe(df)
             self.statusBar().showMessage(
                 f"Загружено: {csv_path} | строк: {len(df)} | столбцов: {len(df.columns)}"
@@ -614,32 +715,35 @@ class MainWindow(QMainWindow):
         self._proxy = ReviewFilterProxyModel(self._model)
         self.table.setModel(self._proxy)
 
-        # обновлять сводку/диаграммы при изменениях
+        self._text_col = self._model.column_name_to_index("text") or self._model.column_name_to_index("Текст")
+        self._col_rating = self._model.column_name_to_index("rating") or self._model.column_name_to_index("Рейтинг")
+        self._col_platform = self._model.column_name_to_index("platform") or self._model.column_name_to_index("Платформа")
+        self._col_org = self._model.column_name_to_index("organization") or self._model.column_name_to_index("Организация")
+        self._col_need_answer = self._model.column_name_to_index("need_answer")
+
+        if self._text_col is not None:
+            self.table.setItemDelegateForColumn(self._text_col, TextWrapDelegate(self.table))
+            self.table.verticalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
+
+        if self._col_need_answer is not None:
+            self.table.setItemDelegateForColumn(self._col_need_answer, CheckBoxDelegate(self.table))
+
+        self._date_from.setDate(self._date_from.minimumDate())
+        self._date_to.setDate(self._date_to.minimumDate())
+
         self._proxy.modelReset.connect(self._on_view_changed)
         self._proxy.layoutChanged.connect(self._on_view_changed)
         self._proxy.rowsInserted.connect(lambda *_: self._on_view_changed())
         self._proxy.rowsRemoved.connect(lambda *_: self._on_view_changed())
         self._proxy.dataChanged.connect(lambda *_: self._on_view_changed())
 
+        self._model.dataChanged.connect(self._on_source_data_changed)
+
+        self._need_answer_combo.setEnabled(self._col_need_answer is not None)
+
         self._populate_filter_values(df)
-
-        # индексы колонок для раскладки
-        self._text_col = self._model.column_name_to_index("text") or self._model.column_name_to_index("Текст")
-        self._col_rating = self._model.column_name_to_index("rating") or self._model.column_name_to_index("Рейтинг")
-        self._col_platform = self._model.column_name_to_index("platform") or self._model.column_name_to_index("Платформа")
-        self._col_org = self._model.column_name_to_index("organization") or self._model.column_name_to_index("Организация")
-
-        # делегат на колонку текста
-        if self._text_col is not None:
-            self.table.setItemDelegateForColumn(self._text_col, TextWrapDelegate(self.table))
-            self.table.verticalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
-
-        # при старте оставляем даты на "—"
-        self._date_from.setDate(self._date_from.minimumDate())
-        self._date_to.setDate(self._date_to.minimumDate())
-
         self._apply_column_layout()
-        self._on_view_changed()  # первичный расчёт/отрисовка
+        self._on_view_changed()
 
     def _populate_filter_values(self, df: pd.DataFrame):
         def fill_combo(combo: QComboBox, col_names):
@@ -660,7 +764,7 @@ class MainWindow(QMainWindow):
         return None if v == 0 and sp.specialValueText() == "—" else float(v)
 
     def _dateedit_to_dt(self, de: QDateEdit) -> Optional[datetime]:
-        if de.specialValueText() and de.date() == de.minimumDate():
+        if de.specialValueText() and de.date() == self._date_from.minimumDate():
             return None
         txt = de.text().strip()
         if not txt:
@@ -680,6 +784,7 @@ class MainWindow(QMainWindow):
                                      self._spin_value_or_none(self._rmax))
         self._proxy.set_date_range(self._dateedit_to_dt(self._date_from),
                                    self._dateedit_to_dt(self._date_to))
+        self._proxy.set_need_answer_filter(self._need_answer_combo.currentText())
         self._on_view_changed()
 
     def clear_filters(self):
@@ -688,6 +793,7 @@ class MainWindow(QMainWindow):
         self._platform_combo.setCurrentIndex(0)
         self._org_combo.setCurrentIndex(0)
         self._sentiment_combo.setCurrentIndex(0)
+        self._need_answer_combo.setCurrentIndex(0)
         self._rmin.setValue(0); self._rmax.setValue(0)
         self._date_from.setDate(self._date_from.minimumDate())
         self._date_to.setDate(self._date_to.minimumDate())
@@ -737,7 +843,6 @@ class MainWindow(QMainWindow):
 
     def _update_charts(self):
         df = self._current_filtered_dataframe()
-        # --- Диаграмма 1: количество по рейтингу ---
         self._ax_rating.clear()
         if df is not None and not df.empty:
             if "rating" in df.columns:
@@ -763,7 +868,6 @@ class MainWindow(QMainWindow):
                                  ha="center", va="center", transform=self._ax_rating.transAxes)
         self._canvas_rating.draw()
 
-        # --- Диаграмма 2: соотношение тональностей ---
         self._ax_sent.clear()
         if df is not None and not df.empty:
             sent_col = next((c for c in ["sentiment", "sentiment_label", "tone", "Тональность"] if c in df.columns), None)
@@ -896,6 +1000,8 @@ class MainWindow(QMainWindow):
             self.table.setColumnWidth(self._col_rating, self._RATING_W); fixed_sum += self._RATING_W
         if self._col_platform is not None:
             self.table.setColumnWidth(self._col_platform, self._PLATFORM_W); fixed_sum += self._PLATFORM_W
+        if self._col_need_answer is not None:
+            self.table.setColumnWidth(self._col_need_answer, self._NEED_ANSWER_W); fixed_sum += self._NEED_ANSWER_W
 
         cols = self._model.columnCount()
         remaining = max(200, viewport_w - fixed_sum)
@@ -913,7 +1019,7 @@ class MainWindow(QMainWindow):
         else:
             text_w = 0
 
-        other_cols = [c for c in range(cols) if c not in {self._text_col, self._col_rating, self._col_platform, self._col_org}]
+        other_cols = [c for c in range(cols) if c not in {self._text_col, self._col_rating, self._col_platform, self._col_org, self._col_need_answer}]
         remaining2 = max(80, remaining - org_w - text_w)
         if other_cols:
             per = max(90, remaining2 // len(other_cols))
@@ -926,7 +1032,6 @@ class MainWindow(QMainWindow):
         self._apply_column_layout()
 
     def _toggle_expand_reviews(self):
-        """Переключает режим: отзывы на весь экран приложения / обычный вид."""
         self._expanded = not self._expanded
         if self._expanded:
             self._filters_group.hide()
@@ -940,6 +1045,22 @@ class MainWindow(QMainWindow):
             self._expand_btn.setStyleSheet(self._expand_style_collapsed)
             self._adjust_filters_width()
         self._apply_column_layout()
+
+    # ---- Автосейв при изменении need_answer ----
+    def _on_source_data_changed(self, topLeft: QModelIndex, bottomRight: QModelIndex, roles: List[int] = []):
+        if self._csv_mode != "reviews":
+            return
+        if self._model is None or self._current_csv_path is None:
+            return
+        if self._col_need_answer is None:
+            return
+        if topLeft.column() <= self._col_need_answer <= bottomRight.column():
+            try:
+                df_to_save = self._model.get_dataframe().copy()
+                df_to_save.to_csv(self._current_csv_path, index=False, quoting=csv.QUOTE_MINIMAL)
+                self.statusBar().showMessage(f"Изменения сохранены: {self._current_csv_path}")
+            except Exception as e:
+                QMessageBox.critical(self, "Ошибка сохранения", str(e))
 
 
 def main():
