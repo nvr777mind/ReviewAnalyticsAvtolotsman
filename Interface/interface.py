@@ -1,6 +1,7 @@
 # reviews_viewer.py
 import sys
 import csv
+import json
 from pathlib import Path
 from datetime import datetime
 from typing import Optional, Any, List, Tuple
@@ -409,7 +410,11 @@ class MainWindow(QMainWindow):
         # --- кнопки действий ---
         apply_btn = QPushButton("Применить фильтры")
         clear_btn = QPushButton("Сбросить фильтры")
-        export_btn = QPushButton("Экспорт отфильтрованного…")
+
+        # Две кнопки экспорта
+        export_csv_btn = QPushButton("Экспорт отфильтрованного в CSV")
+        export_json_btn = QPushButton("Экспорт отфильтрованного в JSON")
+
         run_all_btn = QPushButton("Собрать данные заново")
 
         # стили кнопок
@@ -470,7 +475,7 @@ class MainWindow(QMainWindow):
                   self._platform_combo, self._org_combo, self._sentiment_combo,
                   self._rmin, self._rmax, self._date_from, self._date_to,
                   self._need_answer_combo,
-                  apply_btn, clear_btn, export_btn, run_all_btn]:
+                  apply_btn, clear_btn, export_csv_btn, export_json_btn, run_all_btn]:
             w.setFixedHeight(common_h)
             w.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
 
@@ -536,10 +541,12 @@ class MainWindow(QMainWindow):
         btns_top.addSpacing(12)
         btns_top.addStretch(1)
 
-        # Кнопка экспорта (ниже сводки)
+        # Кнопки экспорта (ниже сводки)
         btns_export = QHBoxLayout()
         btns_export.setContentsMargins(0, 0, 0, 0)
-        btns_export.addWidget(export_btn)
+        btns_export.setSpacing(8)
+        btns_export.addWidget(export_csv_btn)
+        btns_export.addWidget(export_json_btn)
         btns_export.addStretch(1)
 
         # ЛОГ
@@ -625,7 +632,8 @@ class MainWindow(QMainWindow):
         # Сигналы
         apply_btn.clicked.connect(self.apply_filters)
         clear_btn.clicked.connect(self.clear_filters)
-        export_btn.clicked.connect(self.export_filtered)
+        export_csv_btn.clicked.connect(self.export_filtered_csv)
+        export_json_btn.clicked.connect(self.export_filtered_json)
         run_all_btn.clicked.connect(self.run_full_pipeline)
         self._expand_btn.clicked.connect(self._toggle_expand_reviews)
         self._csv_toggle_btn.clicked.connect(self._on_toggle_csv)
@@ -890,21 +898,45 @@ class MainWindow(QMainWindow):
                                ha="center", va="center", transform=self._ax_sent.transAxes)
         self._canvas_sent.draw()
 
-    # ---- Экспорт ----
-    def export_filtered(self):
+    # ---- Имя базового файла экспорта ----
+    def _export_basename(self) -> str:
+        return "filtered_reviews" if self._csv_mode == "reviews" else "filtered_summary"
+
+    # ---- Экспорт в CSV ----
+    def export_filtered_csv(self):
         if not self._proxy:
             return
         out_df = self._current_filtered_dataframe()
         if out_df is None:
             return
 
-        out_path = Path("filtered_reviews.csv")
+        out_path = Path(f"{self._export_basename()}.csv")
         try:
             out_df.to_csv(out_path, index=False, quoting=csv.QUOTE_MINIMAL)
-            self.statusBar().showMessage(f"Экспортировано: {out_path} | строк: {len(out_df)}")
-            QMessageBox.information(self, "Экспорт завершён", f"Файл сохранён: {out_path}")
+            self.statusBar().showMessage(f"Экспортировано в CSV: {out_path} | строк: {len(out_df)}")
+            QMessageBox.information(self, "Экспорт завершён", f"CSV файл сохранён:\n{out_path}")
         except Exception as e:
-            QMessageBox.critical(self, "Ошибка экспорта", str(e))
+            QMessageBox.critical(self, "Ошибка экспорта CSV", str(e))
+
+    # ---- Экспорт в JSON ----
+    def export_filtered_json(self):
+        if not self._proxy:
+            return
+        out_df = self._current_filtered_dataframe()
+        if out_df is None:
+            return
+
+        # приводим NaN к None, чтобы корректно сериализовалось в JSON
+        df_clean = out_df.where(pd.notna(out_df), None)
+
+        out_path = Path(f"{self._export_basename()}.json")
+        try:
+            records = df_clean.to_dict(orient="records")
+            out_path.write_text(json.dumps(records, ensure_ascii=False, indent=2), encoding="utf-8")
+            self.statusBar().showMessage(f"Экспортировано в JSON: {out_path} | строк: {len(df_clean)}")
+            QMessageBox.information(self, "Экспорт завершён", f"JSON файл сохранён:\n{out_path}")
+        except Exception as e:
+            QMessageBox.critical(self, "Ошибка экспорта JSON", str(e))
 
     # ==================== ПАЙПЛАЙН СБОРА ДАННЫХ ====================
     def _append_log(self, text: str):
