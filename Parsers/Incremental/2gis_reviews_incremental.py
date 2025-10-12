@@ -682,7 +682,7 @@ def main():
             })
 
     print(f"\nГотово.")
-    print(f"Δ-отзывы (2ГИС) → {OUT_CSV_REV_DELTA}")
+    print(f"Отзывы (2ГИС) → {OUT_CSV_REV_DELTA}")
     print(f"Summary (новый, 2ГИС) → {OUT_CSV_SUMMARY_NEW}")
     print(f"Базовое summary (для старого счётчика) → {SUMMARY_BASE_CSV}")
     print(f"Пороговая база дат → {ALL_REVIEWS_CSV}")

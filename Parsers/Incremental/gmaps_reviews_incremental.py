@@ -765,7 +765,7 @@ def main():
         f_sum.close()
 
     print(f"\nГотово.")
-    print(f"Δ-отзывы (Google) → {OUT_CSV_REV_DELTA}")
+    print(f"Отзывы (Google) → {OUT_CSV_REV_DELTA}")
     print(f"Summary (новый, Google) → {OUT_CSV_SUMMARY_NEW}")
     print(f"Базовое summary (для старого счётчика) → {SUMMARY_BASE_CSV}")
 
