@@ -388,6 +388,7 @@ class MainWindow(QMainWindow):
         self._date_to   = DateEditWithDash(start_year=2022, start_month=1)
         self._need_answer_combo = QComboBox()
         self._need_answer_combo.addItems(["— Все —", "Требует", "Не требует"])
+        self._need_answer_combo.setToolTip("Фильтр доступен только для датасета «Отзывы». В «Сводке» будет проигнорирован.")
 
         self._rmin.setRange(0, 1000); self._rmax.setRange(0, 1000)
         self._rmin.setSpecialValueText("—"); self._rmax.setSpecialValueText("—")
@@ -531,7 +532,8 @@ class MainWindow(QMainWindow):
         fl.addRow(QLabel("Дата (date_iso):"), date_w)
 
         # ----- Требует ответа -----
-        fl.addRow(QLabel("Требует ответа:"), self._need_answer_combo)
+        self._need_answer_label = QLabel("Требует ответа:")
+        fl.addRow(self._need_answer_label, self._need_answer_combo)
 
         # Кнопки применить/сброс
         btns_top = QHBoxLayout()
@@ -747,9 +749,9 @@ class MainWindow(QMainWindow):
 
         self._model.dataChanged.connect(self._on_source_data_changed)
 
-        self._need_answer_combo.setEnabled(self._col_need_answer is not None)
-
+        # Заполнение значений фильтров (включая need_answer: «Все» только если колонки нет)
         self._populate_filter_values(df)
+
         self._apply_column_layout()
         self._on_view_changed()
 
@@ -762,9 +764,19 @@ class MainWindow(QMainWindow):
                 vals = sorted(set(map(str, df[col].dropna().astype(str))))
                 for v in vals:
                     combo.addItem(v)
+
         fill_combo(self._platform_combo, "platform")
         fill_combo(self._org_combo, "organization")
         fill_combo(self._sentiment_combo, ["sentiment", "sentiment_label", "tone", "Тональность"])
+
+        # need_answer — особая логика: если колонки нет, оставляем только «— Все —»
+        self._need_answer_combo.blockSignals(True)
+        self._need_answer_combo.clear()
+        self._need_answer_combo.addItem("— Все —")
+        if "need_answer" in df.columns:
+            self._need_answer_combo.addItems(["Требует", "Не требует"])
+        self._need_answer_combo.setCurrentIndex(0)
+        self._need_answer_combo.blockSignals(False)
 
     # ---- Фильтры ----
     def _spin_value_or_none(self, sp: QSpinBox) -> Optional[float]:
