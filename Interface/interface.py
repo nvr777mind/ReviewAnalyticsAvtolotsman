@@ -353,11 +353,12 @@ class MainWindow(QMainWindow):
         self.table = QTableView()
         self.table.setSortingEnabled(True)
         self.table.setAlternatingRowColors(True)
+        thead = self.table.horizontalHeader()
         self.table.setSelectionBehavior(QTableView.SelectionBehavior.SelectRows)
         self.table.setWordWrap(True)
         self.table.setTextElideMode(Qt.TextElideMode.ElideNone)
-        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
-        self.table.horizontalHeader().setStretchLastSection(False)
+        thead.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+        thead.setStretchLastSection(False)
         self.table.setEditTriggers(QTableView.EditTrigger.AllEditTriggers)
 
         self._model: Optional[DataFrameModel] = None
@@ -417,6 +418,7 @@ class MainWindow(QMainWindow):
         export_json_btn = QPushButton("Экспорт отфильтрованного в JSON")
 
         run_all_btn = QPushButton("Собрать данные заново")
+        run_incr_btn = QPushButton("Собрать только новое")
 
         # стили кнопок
         apply_btn.setStyleSheet("""
@@ -435,14 +437,16 @@ class MainWindow(QMainWindow):
             QPushButton:hover { background-color: #f6cfd3; }
             QPushButton:pressed { background-color: #f5c6cb; }
         """)
-        run_all_btn.setStyleSheet("""
+        common_run_style = """
             QPushButton {
                 background-color: #d1ecf1; border: 1px solid #bee5eb;
                 padding: 6px 12px; border-radius: 6px; color: #0c5460;
             }
             QPushButton:hover { background-color: #cbe7ed; }
             QPushButton:pressed { background-color: #bee5eb; }
-        """)
+        """
+        run_all_btn.setStyleSheet(common_run_style)
+        run_incr_btn.setStyleSheet(common_run_style)
 
         # сводка (белым)
         self._stats_label = QLabel("Отфильтровано: — | Средний рейтинг: —")
@@ -476,14 +480,22 @@ class MainWindow(QMainWindow):
                   self._platform_combo, self._org_combo, self._sentiment_combo,
                   self._rmin, self._rmax, self._date_from, self._date_to,
                   self._need_answer_combo,
-                  apply_btn, clear_btn, export_csv_btn, export_json_btn, run_all_btn]:
+                  apply_btn, clear_btn, export_csv_btn, export_json_btn,
+                  run_all_btn, run_incr_btn]:
             w.setFixedHeight(common_h)
             w.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
 
         # --- Верхняя строка контейнера фильтров ---
-        header_row = QHBoxLayout()
-        header_row.addStretch(1)
-        header_row.addWidget(run_all_btn)
+        header_row = QVBoxLayout()
+        top_buttons = QHBoxLayout()
+        top_buttons.addStretch(1)
+        top_buttons.addWidget(run_all_btn)
+        header_row.addLayout(top_buttons)
+        # новая кнопка — непосредственно под предыдущей
+        second_row = QHBoxLayout()
+        second_row.addStretch(1)
+        second_row.addWidget(run_incr_btn)
+        header_row.addLayout(second_row)
 
         # --- Форма фильтров ---
         fl = QFormLayout()
@@ -637,6 +649,7 @@ class MainWindow(QMainWindow):
         export_csv_btn.clicked.connect(self.export_filtered_csv)
         export_json_btn.clicked.connect(self.export_filtered_json)
         run_all_btn.clicked.connect(self.run_full_pipeline)
+        run_incr_btn.clicked.connect(self.run_incremental_pipeline)
         self._expand_btn.clicked.connect(self._toggle_expand_reviews)
         self._csv_toggle_btn.clicked.connect(self._on_toggle_csv)
 
@@ -645,7 +658,7 @@ class MainWindow(QMainWindow):
         self._scraper_procs: List[Tuple[str, QProcess]] = []
         self._scrapers_done = 0
 
-        # Пути к скриптам
+        # Пути к скриптам (полный сбор)
         self.SCRAPER_SCRIPTS: List[Tuple[str, Path]] = [
             ("Google Maps", Path("Parsers/gmaps_reviews.py")),
             ("Yandex Maps", Path("Parsers/yamaps_reviews.py")),
@@ -655,6 +668,13 @@ class MainWindow(QMainWindow):
             ("Merge Reviews", Path("Csv/Reviews/merged_reviews.py")),
             ("Add Sentiment", Path("DataAnalytics/add_sentiment.py")),
             ("Merge Summary", Path("Csv/Summary/merged_summary.py")),
+        ]
+
+        # Инкрементальный сбор — скрипты обнаруживаются динамически
+        self.INCR_MERGE_SCRIPTS: List[Tuple[str, Path]] = [
+            ("Merge NEW Reviews", Path("Csv/Reviews/NewReviews/merged_new_reviews.py")),
+            ("Merge NEW Summary", Path("Csv/Summary/NewSummary/merged_new_summary.py")),
+            ("Add Sentiment", Path("DataAnalytics/add_sentiment.py")),
         ]
 
         # Данные
@@ -954,6 +974,7 @@ class MainWindow(QMainWindow):
     def _append_log(self, text: str):
         self._log.appendPlainText(text.rstrip())
 
+    # ---------- Полный сбор ----------
     def run_full_pipeline(self):
         if self._running:
             QMessageBox.information(self, "Уже выполняется", "Пайплайн уже запущен.")
@@ -1032,6 +1053,106 @@ class MainWindow(QMainWindow):
         name, _ = self.MERGE_SCRIPTS[idx]
         self._append_log(f"[{name}] Завершён с кодом {code}.")
         self._run_merges_sequentially(idx + 1)
+
+    # ---------- Инкрементальный сбор ----------
+    def _discover_incremental_scripts(self) -> List[Tuple[str, Path]]:
+        """Находит все *.py в Parsers/Incremental и возвращает список (name, path)."""
+        inc_dir = Path("Parsers/Incremental")
+        scripts = []
+        if inc_dir.exists():
+            for p in sorted(inc_dir.glob("*.py")):
+                scripts.append((p.stem, p))
+        return scripts
+
+    def run_incremental_pipeline(self):
+        if self._running:
+            QMessageBox.information(self, "Уже выполняется", "Пайплайн уже запущен.")
+            return
+
+        reply = QMessageBox.question(
+            self,
+            "Подтверждение",
+            "Собрать только новые данные?\nБудут запущены инкрементальные парсеры, затем новые данные будут добавлены к остальным.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+
+        incr_scrapers = self._discover_incremental_scripts()
+        if not incr_scrapers:
+            QMessageBox.critical(self, "Скрипты не найдены",
+                                 "Не найдено ни одного инкрементального скрипта в Parsers/Incremental/*.py")
+            return
+
+        missing = [str(p) for _, p in (incr_scrapers + self.INCR_MERGE_SCRIPTS) if not p.exists()]
+        if missing:
+            QMessageBox.critical(self, "Скрипты не найдены",
+                                 "Отсутствуют файлы:\n" + "\n".join(missing))
+            return
+
+        # Стартуем инкрементальные парсеры параллельно
+        self._running = True
+        self._scrapers_done = 0
+        self._scraper_procs.clear()
+        self._append_log("=== Инкрементальные парсеры (параллельно) ===")
+
+        # сохраним список текущих инкрементальных для колбэков
+        self._incr_scrapers_cache = incr_scrapers  # type: ignore[attr-defined]
+
+        for name, path in incr_scrapers:
+            proc = QProcess(self)
+            proc.setProgram(sys.executable)
+            proc.setArguments([str(path)])
+            proc.setWorkingDirectory(str(Path(".").resolve()))
+            proc.readyReadStandardOutput.connect(
+                lambda p=proc, n=name: self._append_log(f"[INCR {n}] {bytes(p.readAllStandardOutput()).decode('utf-8', errors='replace')}")
+            )
+            proc.readyReadStandardError.connect(
+                lambda p=proc, n=name: self._append_log(f"[INCR {n} ERR] {bytes(p.readAllStandardError()).decode('utf-8', errors='replace')}")
+            )
+            proc.finished.connect(lambda code, status, n=name: self._on_incr_scraper_finished(n, code, status))
+            self._scraper_procs.append((name, proc))
+            proc.start()
+
+    def _on_incr_scraper_finished(self, name: str, code: int, status):
+        self._append_log(f"[INCR {name}] Завершён с кодом {code}.")
+        self._scrapers_done += 1
+        # Когда закончатся ВСЕ из Parsers/Incremental — запускаем объединение новых данных
+        if self._scrapers_done == len(self._scraper_procs):
+            self._append_log("=== Инкрементальные парсеры завершены. Запуск объединения новых данных… ===")
+            self._run_incr_merges_sequentially(0)
+
+    def _run_incr_merges_sequentially(self, idx: int):
+        if idx >= len(self.INCR_MERGE_SCRIPTS):
+            self._append_log("=== Инкрементальное слияние завершено. Перезагрузка таблицы… ===")
+            try:
+                self.autoload_csv()
+                QMessageBox.information(self, "Готово", "Новые данные собраны и объединены.")
+            except Exception as e:
+                QMessageBox.critical(self, "Ошибка обновления", str(e))
+            self._running = False
+            return
+
+        name, path = self.INCR_MERGE_SCRIPTS[idx]
+        self._append_log(f"[{name}] Запуск {path}…")
+        proc = QProcess(self)
+        proc.setProgram(sys.executable)
+        proc.setArguments([str(path)])
+        proc.setWorkingDirectory(str(Path(".").resolve()))
+        proc.readyReadStandardOutput.connect(
+            lambda p=proc, n=name: self._append_log(f"[{n}] {bytes(p.readAllStandardOutput()).decode('utf-8', errors='replace')}")
+        )
+        proc.readyReadStandardError.connect(
+            lambda p=proc, n=name: self._append_log(f"[{n} ERR] {bytes(p.readAllStandardError()).decode('utf-8', errors='replace')}")
+        )
+        proc.finished.connect(lambda code, status, i=idx: self._on_incr_merge_finished(code, status, i))
+        proc.start()
+
+    def _on_incr_merge_finished(self, code: int, status, idx: int):
+        name, _ = self.INCR_MERGE_SCRIPTS[idx]
+        self._append_log(f"[{name}] Завершён с кодом {code}.")
+        self._run_incr_merges_sequentially(idx + 1)
 
     # ---- Макет колонок ----
     def _apply_column_layout(self):
