@@ -4,7 +4,7 @@ import csv
 import json
 from pathlib import Path
 from datetime import datetime
-from typing import Optional, Any, List, Tuple
+from typing import Optional, Any, List, Tuple, Dict
 
 import pandas as pd
 from PyQt6.QtCore import (
@@ -15,13 +15,19 @@ from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QTableView,
     QPushButton, QComboBox, QSpinBox, QGroupBox, QFormLayout, QDateEdit,
     QMessageBox, QStyledItemDelegate, QHeaderView, QLabel, QPlainTextEdit,
-    QSizePolicy, QStyleOptionButton, QStyle
+    QSizePolicy, QStyleOptionButton, QStyle, QSystemTrayIcon
 )
 from PyQt6.QtGui import QTextOption, QTextDocument, QPainter
 
 # matplotlib (QtAgg для PyQt6)
 from matplotlib.figure import Figure
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
+
+# === Уведомления (только plyer) ===
+try:
+    from plyer import notification as plyer_notification
+except Exception:
+    plyer_notification = None
 
 
 # ---------- Модель DataFrame → Qt ----------
@@ -345,6 +351,12 @@ class MainWindow(QMainWindow):
     def __init__(self, df: Optional[pd.DataFrame] = None):
         super().__init__()
         self.setWindowTitle("Reviews Viewer")
+
+        # Системный трей для уведомлений (Qt фолбэк)
+        self._tray = QSystemTrayIcon(self)
+        self._tray.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_MessageBoxInformation))
+        self._tray.setVisible(True)  # важно: иначе showMessage не покажет уведомление
+
         self.resize(1400, 820)
 
         self.FILTERS_WIDTH_RATIO = 0.5
@@ -685,6 +697,177 @@ class MainWindow(QMainWindow):
 
         # начальная подгонка ширины фильтров
         self._adjust_filters_width()
+
+    # ---------- УВЕДОМЛЕНИЯ И СРАВНЕНИЕ СВОДОК (plyer only) ----------
+    def _notify(self, title: str, message: str):
+        """Уведомление: plyer → QSystemTrayIcon → QMessageBox → лог."""
+        # 1) Пытаемся через plyer
+        try:
+            if plyer_notification is not None:
+                plyer_notification.notify(title=title, message=message, timeout=10)
+                return
+        except Exception:
+            pass
+
+        # 2) Qt системный трей (работает без дополнительных зависимостей)
+        try:
+            if hasattr(self, "_tray") and isinstance(self._tray, QSystemTrayIcon) and self._tray.isVisible():
+                # 5 секунд
+                self._tray.showMessage(title, message, QSystemTrayIcon.MessageIcon.Information, 5000)
+                return
+        except Exception:
+            pass
+
+        # 3) Фолбэк: окно + статус-бар + лог
+        try:
+            QMessageBox.information(self, title, message)
+        except Exception:
+            pass
+        self.statusBar().showMessage(f"{title}: {message}")
+        self._append_log(f"[NOTIFY] {title}: {message}")
+
+
+    @staticmethod
+    def _find_col(df: pd.DataFrame, candidates: List[str]) -> Optional[str]:
+        """Находит первую подходящую колонку из списка кандидатов (без строгого учёта регистра)."""
+        for c in candidates:
+            if c in df.columns:
+                return c
+        lower_map = {col.lower(): col for col in df.columns}
+        for c in candidates:
+            if c.lower() in lower_map:
+                return lower_map[c.lower()]
+        return None
+
+    @staticmethod
+    def _to_float(x: Any) -> Optional[float]:
+        if x is None:
+            return None
+        s = str(x).strip().replace(",", ".")
+        try:
+            return float(s)
+        except Exception:
+            return None
+
+    @staticmethod
+    def _to_int(x: Any) -> Optional[int]:
+        if x is None:
+            return None
+        s = str(x).strip().replace(" ", "").replace(",", "")
+        try:
+            return int(float(s))
+        except Exception:
+            return None
+
+    def _diff_summaries(self, old_df: pd.DataFrame, new_df: pd.DataFrame) -> List[Tuple[str, str, Dict[str, Any]]]:
+        """
+        Возвращает список изменений:
+        [(platform, organization, {delta_count, old_count, new_count, old_rating, new_rating})]
+        """
+        plat_col = self._find_col(new_df, ["platform", "Платформа"]) or "platform"
+        org_col  = self._find_col(new_df, ["organization", "Организация"]) or "organization"
+
+        count_candidates = ["reviews_count", "ratings_count"]
+        rating_candidates = ["rating_avg", "avg_rating"]
+
+        count_col_new = self._find_col(new_df, count_candidates)
+        rating_col_new = self._find_col(new_df, rating_candidates)
+        count_col_old = self._find_col(old_df, count_candidates)
+        rating_col_old = self._find_col(old_df, rating_candidates)
+
+        if (count_col_new is None and rating_col_new is None) or (plat_col not in new_df.columns or org_col not in new_df.columns):
+            return []
+
+        old_map: Dict[Tuple[str, str], Dict[str, Any]] = {}
+        if plat_col in old_df.columns and org_col in old_df.columns:
+            for _, row in old_df.iterrows():
+                key = (str(row.get(plat_col, "")).strip(), str(row.get(org_col, "")).strip())
+                old_map[key] = {
+                    "count": self._to_int(row.get(count_col_old)) if count_col_old else None,
+                    "rating": self._to_float(row.get(rating_col_old)) if rating_col_old else None,
+                }
+
+        changes: List[Tuple[str, str, Dict[str, Any]]] = []
+        for _, row in new_df.iterrows():
+            p = str(row.get(plat_col, "")).strip()
+            o = str(row.get(org_col, "")).strip()
+            key = (p, o)
+            new_count = self._to_int(row.get(count_col_new)) if count_col_new else None
+            new_rating = self._to_float(row.get(rating_col_new)) if rating_col_new else None
+
+            old = old_map.get(key, {"count": None, "rating": None})
+            old_count = old.get("count")
+            old_rating = old.get("rating")
+
+            delta_count = None
+            if new_count is not None and old_count is not None:
+                delta_count = new_count - old_count
+            elif new_count is not None and old_count is None and new_count > 0:
+                delta_count = new_count  # новая пара
+
+            rating_changed = False
+            if new_rating is not None and old_rating is not None:
+                rating_changed = abs(new_rating - old_rating) >= 0.01
+            elif new_rating is not None and old_rating is None:
+                rating_changed = True
+
+            if (delta_count is not None and delta_count > 0) or rating_changed:
+                changes.append((p, o, {
+                    "delta_count": delta_count,
+                    "old_count": old_count,
+                    "new_count": new_count,
+                    "old_rating": old_rating,
+                    "new_rating": new_rating
+                }))
+        return changes
+
+    def _send_incremental_notifications(self):
+        """Сравнивает Csv/Summary/all_new_summary.csv и Csv/Summary/all_summary.csv и отправляет уведомления."""
+        new_path = Path("Csv/Summary/NewSummary/all_new_summary.csv")
+        old_path = Path("Csv/Summary/all_summary.csv")
+        if not new_path.exists():
+            self._append_log("[NOTIFY] all_new_summary.csv не найден — уведомлять нечего.")
+            return
+        if not old_path.exists():
+            self._notify("Сводка обновлена", "Создан all_new_summary, но all_summary не найден для сравнения.")
+            return
+        try:
+            new_df = pd.read_csv(new_path, dtype=str, keep_default_na=False)
+            old_df = pd.read_csv(old_path, dtype=str, keep_default_na=False)
+        except Exception as e:
+            self._append_log(f"[NOTIFY] Ошибка чтения сводок: {e}")
+            return
+
+        changes = self._diff_summaries(old_df, new_df)
+
+        try:
+            new_df.to_csv(old_path, index=False)
+            self._append_log("[NOTIFY] Обновил all_summary.csv из all_new_summary.csv (после сравнения).")
+        except Exception as e:
+            self._append_log(f"[NOTIFY] Не удалось обновить all_summary.csv: {e}")
+            
+        if not changes:
+            self._notify("Нет изменений", "Новые комментарии и рейтинг без изменений.")
+            return
+
+        MAX_TOASTS = 10
+        if len(changes) > MAX_TOASTS:
+            self._notify("Обновления сводки", f"Изменений: {len(changes)} (см. лог).")
+            for p, o, d in changes:
+                parts = []
+                if d.get("delta_count"):
+                    parts.append(f"+{d['delta_count']} комм.")
+                if d.get("old_rating") is not None and d.get("new_rating") is not None and abs(d['new_rating'] - d['old_rating']) >= 0.01:
+                    parts.append(f"рейтинг {d['old_rating']:.2f} → {d['new_rating']:.2f}")
+                self._append_log(f"[CHANGE] {p} — {o}: " + (", ".join(parts) if parts else "изменение"))
+            return
+
+        for p, o, d in changes:
+            if d.get("delta_count") and d["delta_count"] > 0:
+                self._notify("Новые комментарии", f"{p} — {o}: +{d['delta_count']}")
+            if d.get("old_rating") is not None and d.get("new_rating") is not None:
+                if abs(d["new_rating"] - d["old_rating"]) >= 0.01:
+                    self._notify("Изменение рейтинга", f"{p} — {o}: {d['old_rating']:.2f} → {d['new_rating']:.2f}")
 
     # ---------- Сервис: ширина группы фильтров ----------
     def _adjust_filters_width(self):
@@ -1127,6 +1310,9 @@ class MainWindow(QMainWindow):
         if idx >= len(self.INCR_MERGE_SCRIPTS):
             self._append_log("=== Инкрементальное слияние завершено. Перезагрузка таблицы… ===")
             try:
+                # Сначала уведомления по разнице all_new_summary vs all_summary
+                self._send_incremental_notifications()
+                # Затем перезагружаем основной CSV
                 self.autoload_csv()
                 QMessageBox.information(self, "Готово", "Новые данные собраны и объединены.")
             except Exception as e:
