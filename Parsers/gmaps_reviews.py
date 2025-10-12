@@ -1,10 +1,11 @@
-# gmaps_reviews.py — один проход + «Сначала новые»
+# gmaps_reviews.py — полный сбор: <2 года в Reviews + Summary с полным числом текстовых отзывов
 # -*- coding: utf-8 -*-
 import re, time, csv, calendar
+from time import monotonic
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs, urlencode, urlunparse, unquote
-from datetime import datetime, timedelta
-from typing import Optional
+from datetime import datetime, timedelta, date
+from typing import Optional, Tuple, List, Set
 
 import warnings
 from urllib3.exceptions import NotOpenSSLWarning
@@ -15,27 +16,39 @@ from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.common.by import By
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.action_chains import ActionChains
+from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-from selenium.common.exceptions import NoSuchWindowException, WebDriverException, TimeoutException
+from selenium.common.exceptions import NoSuchWindowException, WebDriverException
 
 # ====== НАСТРОЙКИ ======
 DRIVER_PATH    = "drivers/yandexdriver"  # для Windows укажи свой путь
 YANDEX_BINARY  = "/Applications/Yandex.app/Contents/MacOS/Yandex"
 URLS_FILE      = "Urls/gmaps_urls.txt"
 
-OUT_CSV_REV    = "Csv/Reviews/gmaps_reviews.csv"   # детальные отзывы (только с текстом и ≤ 2 лет)
+OUT_CSV_REV    = "Csv/Reviews/gmaps_reviews.csv"   # детальные отзывы: только с текстом и за последние 2 года
 OUT_CSV_SUM    = "Csv/Summary/gmaps_summary.csv"   # summary по организации
 
 FIRST_WAIT     = 12
 SHORT_WAIT     = 2
-SCROLL_PAUSE   = 0.6
-SCROLL_HARD_LIMIT = 600
 
-CUTOFF_YEARS   = 3
+# Тюнинг скролла
+SCROLL_PAUSE               = 0.25
+SCROLL_HARD_LIMIT          = 3000
+
+# Анти-зацикливание и «принудители»
+MAX_SCROLL_SECONDS         = 180   # жёсткий предел на прокрутку отзывов для одного адреса
+NO_HEIGHT_GROWTH_TOLERANCE = 8     # подряд не растёт scrollHeight
+NO_CARD_GROWTH_TOLERANCE   = 12    # подряд не растёт число карточек
+NO_TEXT_GROWTH_TOLERANCE   = 12    # подряд не растёт число карточек с текстом
+PAGE_DOWN_EVERY_N          = 3
+JIGGLE_EVERY_N             = 12
+FOCUS_RETRY_EVERY_N        = 10
+END_KEY_EVERY_N            = 6
+
+CUTOFF_YEARS   = 2
 PLATFORM       = "Google Maps"
-
-ORG = "avtolotsman"
+ORG            = "avtolotsman"
 
 # ====== СЕЛЕКТОРЫ ======
 REVIEWS_CONTAINER_CANDIDATES = [
@@ -49,13 +62,13 @@ REVIEW_CARD_FALLBACK = "div.jftiEf"
 
 AUTHOR_CSS = ".d4r55.fontTitleMedium"
 RATING_CSS = ".kvMYJc"
-DATE_CSS   = ".rsqaWe"
+DATE_CSS   = ".rsqaWe"                # <span class="rsqaWe">месяц назад</span>
 TEXT_CSS   = ".wiI7pd"
 EXPAND_BTN_CSS = "button.w8nwRe.kyuRq"
 
 # summary
-RATING_BIG_CSS  = "div.fontDisplayLarge"         # 4,4
-COUNT_SMALL_CSS = "div.fontBodySmall"            # Отзывов: 522
+RATING_BIG_CSS  = "div.fontDisplayLarge"         # например: 4,4
+COUNT_SMALL_CSS = "div.fontBodySmall"            # например: Отзывов: 522 / Reviews: 522
 
 # ====== ДАТЫ ======
 def _last_day_of_month(year: int, month: int) -> int:
@@ -77,13 +90,13 @@ def _subtract_years(dt: datetime, years: int) -> datetime:
     return dt.replace(year=year, month=month, day=day)
 
 _RU_UNITS = {
-    'сек': 'seconds', 'секун': 'seconds',
-    'мин': 'minutes', 'минут': 'minutes', 'мину': 'minutes',
-    'час': 'hours', 'часа': 'hours', 'часов': 'hours',
-    'день': 'days', 'дня': 'days', 'дней': 'days', 'сут': 'days',
-    'недел': 'weeks', 'нед': 'weeks',
-    'месяц': 'months', 'месяца': 'months', 'месяцев': 'months',
-    'год': 'years', 'года': 'years', 'лет': 'years'
+    'сек': 'seconds','секун': 'seconds',
+    'мин': 'minutes','минут': 'minutes','мину': 'minutes',
+    'час': 'hours','часа': 'hours','часов': 'hours',
+    'день': 'days','дня': 'days','дней': 'days','сут': 'days',
+    'недел': 'weeks','нед': 'weeks',
+    'месяц': 'months','месяца': 'months','месяцев': 'months',
+    'год': 'years','года': 'years','лет': 'years'
 }
 
 def _apply_delta(now: datetime, unit: str, n: int) -> datetime:
@@ -126,6 +139,59 @@ def normalize_relative_ru(text: str, now: Optional[datetime] = None) -> Optional
         if unit is None: return None
         return (_apply_delta(now, unit, n)).date().isoformat()
     return None
+
+# Абсолютные даты RU/EN и цифровые
+RU_MONTHS = {
+    "января":1,"февраля":2,"марта":3,"апреля":4,"мая":5,"июня":6,
+    "июля":7,"августа":8,"сентября":9,"октября":10,"ноября":11,"декабря":12
+}
+EN_MONTHS = {
+    "january":1,"february":2,"march":3,"april":4,"may":5,"june":6,
+    "july":7,"august":8,"september":9,"october":10,"november":11,"december":12
+}
+
+def normalize_absolute(text: str) -> Optional[str]:
+    if not text: return None
+    s = text.strip().lower().replace(' г.', '').replace('г.', '').strip()
+
+    # RU: "5 июля 2023"
+    mr = re.match(r'(\d{1,2})\s+([а-яё]+)\s+(\d{4})', s)
+    if mr:
+        d = int(mr.group(1)); mon_name = mr.group(2); y = int(mr.group(3))
+        m = RU_MONTHS.get(mon_name, None)
+        if m:
+            try: return date(y, m, d).isoformat()
+            except ValueError: return None
+
+    # EN: "Jul 5, 2023" или "July 5, 2023"
+    me = re.match(r'([a-z]+)\s+(\d{1,2}),\s*(\d{4})', s)
+    if me:
+        mon_name = me.group(1); d = int(me.group(2)); y = int(me.group(3))
+        m = EN_MONTHS.get(mon_name, EN_MONTHS.get(mon_name.lower(), None))
+        if m:
+            try: return date(y, m, d).isoformat()
+            except ValueError: return None
+
+    # EN: "5 Jul 2023" / "5 July 2023"
+    me2 = re.match(r'(\d{1,2})\s+([a-z]+)\s+(\d{4})', s)
+    if me2:
+        d = int(me2.group(1)); mon_name = me2.group(2); y = int(me2.group(3))
+        m = EN_MONTHS.get(mon_name, EN_MONTHS.get(mon_name.lower(), None))
+        if m:
+            try: return date(y, m, d).isoformat()
+            except ValueError: return None
+
+    # Numeric: "05.07.2023" или "2023-07-05"
+    for fmt in ("%d.%m.%Y", "%Y-%m-%d"):
+        try:
+            return datetime.strptime(s, fmt).date().isoformat()
+        except ValueError:
+            pass
+    return None
+
+def normalize_date_pref_ru_relative(text: str) -> Optional[str]:
+    """Сначала пробуем RU-относительные (rsqaWe: «месяц назад»), затем абсолютные."""
+    return normalize_relative_ru(text) or normalize_absolute(text)
 
 # ====== УТИЛЫ ======
 def add_hl_ru(url: str) -> str:
@@ -175,12 +241,6 @@ def find_reviews_container(drv):
             continue
     return None
 
-def safe_scroll_js(drv, script, *args):
-    try:
-        drv.execute_script(script, *args); return True
-    except (NoSuchWindowException, WebDriverException):
-        return False
-
 def organization_from_url_or_title(drv, url: str) -> str:
     try:
         path = urlparse(url).path  # /maps/place/<name>/...
@@ -199,7 +259,7 @@ def organization_from_url_or_title(drv, url: str) -> str:
         return ""
 
 # ====== SUMMARY (rating_avg, ratings_count) ======
-def extract_summary_gmaps(drv) -> tuple[Optional[float], Optional[int]]:
+def extract_summary_gmaps(drv) -> Tuple[Optional[float], Optional[int]]:
     rating_avg = None
     try:
         el = WebDriverWait(drv, 8).until(EC.presence_of_element_located((By.CSS_SELECTOR, RATING_BIG_CSS)))
@@ -318,8 +378,9 @@ def set_sort_newest(drv, attempts: int = 3) -> bool:
             return True
     return False
 
-# ====== Парс одной карточки ======
+# ====== Карточка отзыва ======
 def extract_card_fields(c):
+    # раскрыть «Ещё»
     for b in c.find_elements(By.CSS_SELECTOR, EXPAND_BTN_CSS):
         try:
             if b.is_displayed() and b.is_enabled():
@@ -328,8 +389,10 @@ def extract_card_fields(c):
             pass
 
     author = ""
-    try: author = c.find_element(By.CSS_SELECTOR, AUTHOR_CSS).text.strip()
-    except Exception: pass
+    try:
+        author = c.find_element(By.CSS_SELECTOR, AUTHOR_CSS).text.strip()
+    except Exception:
+        pass
 
     rating = None
     try:
@@ -344,17 +407,38 @@ def extract_card_fields(c):
         except Exception:
             pass
 
+    # --- ДАТА: читаем .rsqaWe и парсим как RU-относительную (первым делом), затем абсолютную ---
     date_text, date_iso = "", None
     try:
-        date_text = c.find_element(By.CSS_SELECTOR, DATE_CSS).text.strip()
-        date_iso = normalize_relative_ru(date_text)
+        el = c.find_element(By.CSS_SELECTOR, DATE_CSS)  # .rsqaWe
+        date_text = (el.text or "").strip()
+        if not date_text:
+            date_text = (el.get_attribute("aria-label") or "").strip()
     except Exception:
-        pass
+        date_text = ""
+    if date_text:
+        date_iso = normalize_date_pref_ru_relative(date_text)
+
+    # запасной поиск абсолютной даты в тексте карточки
+    if not date_iso:
+        full_txt = (c.text or "").strip()
+        if full_txt:
+            for p in [r"\b\d{1,2}\s+(?:января|февраля|марта|апреля|мая|июня|июля|августа|сентября|октября|ноября|декабря)\s+\d{4}\b",
+                      r"\b(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\s+\d{1,2},\s*\d{4}\b",
+                      r"\b\d{1,2}\s+(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\s+\d{4}\b",
+                      r"\b\d{2}\.\d{2}\.\d{4}\b", r"\b\d{4}-\d{2}-\d{2}\b"]:
+                m = re.search(p, full_txt, flags=re.I)
+                if m:
+                    date_iso = normalize_absolute(m.group(0))
+                    if date_iso:
+                        date_text = m.group(0)
+                        break
 
     text = ""
     try:
         texts = [t.text.strip() for t in c.find_elements(By.CSS_SELECTOR, TEXT_CSS) if t.text.strip()]
-        if texts: text = max(texts, key=len)
+        if texts:
+            text = max(texts, key=len)
     except Exception:
         pass
 
@@ -362,84 +446,213 @@ def extract_card_fields(c):
         "rating": rating,
         "author": author,
         "date_text": date_text,
-        "date_iso": date_iso,
+        "date_iso": date_iso,   # ISO 'YYYY-MM-DD' если разобрали
         "text": text,
     }
 
-# ====== ЕДИНЫЙ ПРОХОД ======
-def one_pass_collect(drv, container, cutoff_date, w_rev, org: str) -> int:
-    seen_text_keys = set()
-    seen_recent_keys = set()
+# ====== Скролл до конца ленты (с анти-зацикливанием) ======
+def _focus_container(drv, container):
+    try:
+        ActionChains(drv).move_to_element(container).pause(0.02).click().perform()
+        return True
+    except Exception:
+        try:
+            drv.execute_script("arguments[0].focus();", container)
+            return True
+        except Exception:
+            return False
+
+def scroll_to_end(drv, container) -> Tuple[int, int]:
+    """
+    Возвращает (total_cards_seen, text_cards_seen) после попытки доскроллить «до упора».
+    Защиты:
+      - ограничение по времени (MAX_SCROLL_SECONDS)
+      - 3 независимых счётчика «нет роста»: высоты, числа карточек, числа карточек с текстом
+      - периодический рефокус контейнера, посылка END/PGDN и «покачивание»
+    """
+    start_ts = monotonic()
 
     last_h = -1
-    same_h_iters = 0
-    rounds = 0
+    last_cards = -1
+    last_text = -1
 
-    while rounds < SCROLL_HARD_LIMIT:
-        rounds += 1
+    no_h_growth = 0
+    no_cards_growth = 0
+    no_text_growth = 0
 
+    iters = 0
+    total_seen = 0
+    text_seen = 0
+
+    _focus_container(drv, container)
+
+    while iters < SCROLL_HARD_LIMIT:
+        iters += 1
+
+        # тайм-аут по времени
+        if monotonic() - start_ts > MAX_SCROLL_SECONDS:
+            break
+
+        # раскрыть появившиеся «Ещё»
         for b in container.find_elements(By.CSS_SELECTOR, EXPAND_BTN_CSS):
             try:
-                if b.is_displayed() and b.is_enabled(): b.click()
+                if b.is_displayed() and b.is_enabled():
+                    b.click()
             except Exception:
                 pass
 
-        cards = container.find_elements(By.CSS_SELECTOR, REVIEW_CARD_CSS) \
-                or container.find_elements(By.CSS_SELECTOR, REVIEW_CARD_FALLBACK)
+        # актуальные карточки
+        cards = (container.find_elements(By.CSS_SELECTOR, REVIEW_CARD_CSS)
+                 or container.find_elements(By.CSS_SELECTOR, REVIEW_CARD_FALLBACK))
+        total_seen = len(cards)
 
+        # посчитать, сколько из них уже имеют текст
+        cur_text = 0
         for c in cards:
             try:
-                item = extract_card_fields(c)
+                if any(t.text.strip() for t in c.find_elements(By.CSS_SELECTOR, TEXT_CSS)):
+                    cur_text += 1
             except Exception:
-                continue
+                pass
+        text_seen = cur_text
 
-            txt = (item.get("text") or "").strip()
-            if not txt:
-                continue
-
-            key_all = (item.get("author") or "", txt[:120])
-            if key_all not in seen_text_keys:
-                seen_text_keys.add(key_all)
-
-            d_iso = item.get("date_iso")
-            if not d_iso:
-                continue
-            try:
-                d = datetime.fromisoformat(d_iso[:10]).date()
-            except Exception:
-                continue
-
-            if d >= cutoff_date:
-                key_recent = (item.get("author") or "", item.get("date_text") or "", txt[:120])
-                if key_recent not in seen_recent_keys:
-                    seen_recent_keys.add(key_recent)
-                    w_rev.writerow({
-                        "rating":       item.get("rating"),
-                        "author":       (item.get("author") or "").strip(),
-                        "date_iso":     d.isoformat(),
-                        "text":         txt.replace("\r", " ").replace("\n", " ").strip(),
-                        "platform":     PLATFORM,
-                        "organization": org,
-                    })
-
+        # текущая высота
         try:
             h = drv.execute_script("return arguments[0].scrollHeight;", container)
+        except Exception:
+            break
+
+        # скроллим вниз
+        try:
             drv.execute_script("arguments[0].scrollTop = arguments[0].scrollHeight;", container)
         except Exception:
             break
 
-        if h == last_h:
-            same_h_iters += 1
-        else:
-            same_h_iters = 0
-        last_h = h
+        # периодически даём END/PGDN
+        if iters % END_KEY_EVERY_N == 0:
+            try: container.send_keys(Keys.END)
+            except Exception: pass
+        if iters % PAGE_DOWN_EVERY_N == 0:
+            try: container.send_keys(Keys.PAGE_DOWN)
+            except Exception: pass
 
-        if same_h_iters >= 3:
+        # «покачивание»
+        if iters % JIGGLE_EVERY_N == 0:
+            try:
+                drv.execute_script("arguments[0].scrollTop = Math.max(0, arguments[0].scrollTop - 300);", container)
+                time.sleep(0.05)
+                drv.execute_script("arguments[0].scrollTop = arguments[0].scrollHeight;", container)
+            except Exception:
+                pass
+
+        # периодически восстанавливаем фокус
+        if iters % FOCUS_RETRY_EVERY_N == 0:
+            _focus_container(drv, container)
+
+        # анализ «роста»
+        if h == last_h:
+            no_h_growth += 1
+        else:
+            no_h_growth = 0
+
+        if total_seen == last_cards:
+            no_cards_growth += 1
+        else:
+            no_cards_growth = 0
+
+        if text_seen == last_text:
+            no_text_growth += 1
+        else:
+            no_text_growth = 0
+
+        last_h = h
+        last_cards = total_seen
+        last_text = text_seen
+
+        # условия выхода
+        if (no_h_growth >= NO_HEIGHT_GROWTH_TOLERANCE or
+            no_cards_growth >= NO_CARD_GROWTH_TOLERANCE or
+            no_text_growth >= NO_TEXT_GROWTH_TOLERANCE):
             break
 
         time.sleep(SCROLL_PAUSE)
 
-    return len(seen_text_keys)
+    # финальный «добор»: один END и раскрыть «Ещё»
+    try:
+        container.send_keys(Keys.END)
+    except Exception:
+        pass
+    for b in container.find_elements(By.CSS_SELECTOR, EXPAND_BTN_CSS):
+        try:
+            if b.is_displayed() and b.is_enabled():
+                b.click()
+        except Exception:
+            pass
+
+    # финальный пересчёт
+    cards = (container.find_elements(By.CSS_SELECTOR, REVIEW_CARD_CSS)
+             or container.find_elements(By.CSS_SELECTOR, REVIEW_CARD_FALLBACK))
+    total_seen = len(cards)
+    text_seen = 0
+    for c in cards:
+        try:
+            if any(t.text.strip() for t in c.find_elements(By.CSS_SELECTOR, TEXT_CSS)):
+                text_seen += 1
+        except Exception:
+            pass
+
+    return total_seen, text_seen
+
+# ====== Сбор ======
+def collect_all(drv, container, cutoff_date: date, w_rev, org: str) -> Tuple[int, int]:
+    """Полный скролл, подсчёт text-отзывов (для summary) + запись в CSV только отзывов младше 2 лет."""
+    # 1) сперва доскроллим до конца и посчитаем текстовые отзывы
+    _, total_text_reviews = scroll_to_end(drv, container)
+
+    # 2) пробег по карточкам и запись только подходящих по дате и наличию текста
+    seen_keys: Set[Tuple[str, str]] = set()
+    cards = container.find_elements(By.CSS_SELECTOR, REVIEW_CARD_CSS) \
+            or container.find_elements(By.CSS_SELECTOR, REVIEW_CARD_FALLBACK)
+
+    written = 0
+    for c in cards:
+        try:
+            item = extract_card_fields(c)
+        except Exception:
+            continue
+
+        txt = (item.get("text") or "").strip()
+        if not txt:
+            continue
+
+        d_iso = item.get("date_iso")
+        if not d_iso:
+            continue
+
+        try:
+            d = datetime.fromisoformat(d_iso[:10]).date()
+        except Exception:
+            continue
+
+        if d < cutoff_date:
+            continue  # строго младше 2 лет оставляем, остальное пропускаем
+
+        key = ((item.get("author") or "").strip(), txt[:160])
+        if key in seen_keys:
+            continue
+        seen_keys.add(key)
+
+        w_rev.writerow({
+            "rating":       item.get("rating"),
+            "author":       (item.get("author") or "").strip(),
+            "date_iso":     d.isoformat(),
+            "text":         txt.replace("\r", " ").replace("\n", " ").strip(),
+            "platform":     PLATFORM,
+            "organization": org,
+        })
+        written += 1
+
+    return written, total_text_reviews
 
 # ====== MAIN ======
 def main():
@@ -464,14 +677,18 @@ def main():
         urls = []
 
     Path(OUT_CSV_REV).parent.mkdir(parents=True, exist_ok=True)
+    Path(OUT_CSV_SUM).parent.mkdir(parents=True, exist_ok=True)
+
     f_rev = open(OUT_CSV_REV, "w", newline="", encoding="utf-8")
     f_sum = open(OUT_CSV_SUM, "w", newline="", encoding="utf-8")
+
     w_rev = csv.DictWriter(f_rev, fieldnames=["rating","author","date_iso","text","platform","organization"], quoting=csv.QUOTE_ALL)
     w_sum = csv.DictWriter(f_sum, fieldnames=["organization","platform","rating_avg","ratings_count","reviews_count"], quoting=csv.QUOTE_ALL)
     w_rev.writeheader()
     w_sum.writeheader()
 
-    cutoff_date = (datetime.now().date() - timedelta(days=365*CUTOFF_YEARS))
+    # граница «младше 2 лет»
+    cutoff_date = (datetime.now().date() - timedelta(days=365*CUTOFF_YEARS) - timedelta(days=10))
 
     try:
         for i, base in enumerate(urls, 1):
@@ -485,7 +702,7 @@ def main():
             click_all_reviews(drv)
             time.sleep(1.2)
 
-            # <<< СНАЧАЛА НОВЫЕ >>>
+            # «Сначала новые»
             set_sort_newest(drv)
             time.sleep(0.6)
 
@@ -499,24 +716,25 @@ def main():
                     print("  не найден контейнер отзывов, пропускаю")
                     w_sum.writerow({
                         "organization": ORG,
-                        "platform": PLATFORM,
-                        "rating_avg": rating_avg if rating_avg is not None else "",
-                        "ratings_count": ratings_count if ratings_count is not None else "",
-                        "reviews_count": ""
+                        "platform":     PLATFORM,
+                        "rating_avg":   rating_avg if rating_avg is not None else "",
+                        "ratings_count":ratings_count if ratings_count is not None else "",
+                        "reviews_count":""
                     })
                     continue
 
-            total_text_reviews = one_pass_collect(drv, container, cutoff_date, w_rev, ORG)
+            # полный сбор: скроллим до конца, считаем текстовые, записываем <2 лет
+            written_recent, total_text_reviews = collect_all(drv, container, cutoff_date, w_rev, ORG)
 
             w_sum.writerow({
                 "organization": ORG,
                 "platform":     PLATFORM,
                 "rating_avg":   rating_avg if rating_avg is not None else "",
                 "ratings_count":ratings_count if ratings_count is not None else "",
-                "reviews_count":total_text_reviews,
+                "reviews_count":total_text_reviews,  # все текстовые на странице после полного скролла
             })
 
-            print(f"  summary: rating={rating_avg}, оценок={ratings_count}, текстовых отзывов={total_text_reviews}")
+            print(f"  summary: rating={rating_avg}, оценок={ratings_count}, текстовых (всего)={total_text_reviews}, записано <2 лет={written_recent}")
     finally:
         try: drv.quit()
         except Exception: pass
