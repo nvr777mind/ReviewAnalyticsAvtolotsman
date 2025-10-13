@@ -35,7 +35,7 @@ FALLBACK_URL = ("https://2gis.ru/penza/search/%D0%B0%D0%B2%D1%82%D0%BE%D0%BB%D0%
 
 # ===== ЯНДЕКС-БРАУЗЕР (macOS) =====
 YANDEX_BROWSER_BINARY = "/Applications/Yandex.app/Contents/MacOS/Yandex"
-YANDEXDRIVER_PATH     = "drivers/yandexdriver"
+YANDEXDRIVER_PATH     = "drivers/Windows/yandexdriver.exe"
 PROFILE_DIR           = str(Path.home() / ".yandex-2gis-scraper")
 
 # ===== ВЫХОД =====

@@ -27,7 +27,7 @@ FALLBACK_URL = ("https://yandex.ru/maps/org/avtolotsman/1694054504/reviews/"
 
 # === УКАЖИ ПУТИ К БРАУЗЕРУ И ДРАЙВЕРУ ===
 YANDEX_BROWSER_BINARY = "/Applications/Yandex.app/Contents/MacOS/Yandex"  # поменять для windows
-YANDEXDRIVER_PATH     = "drivers/yandexdriver"                             # поменять для windows
+YANDEXDRIVER_PATH     = "drivers/Windows/yandexdriver.exe"                             # поменять для windows
 
 # === КУДА ПИСАТЬ CSV ===
 OUT_CSV_REVIEWS  = "Csv/Reviews/yamaps_reviews.csv"

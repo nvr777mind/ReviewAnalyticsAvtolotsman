@@ -41,7 +41,7 @@ YAMAPS_URLS_FILE     = "Urls/yamaps_urls.txt"          # по одной ссы�
 
 # Браузер/драйвер (под macOS; поменяйте при необходимости под Windows/Linux)
 YANDEX_BROWSER_BINARY = "/Applications/Yandex.app/Contents/MacOS/Yandex"
-YANDEXDRIVER_PATH     = "drivers/yandexdriver"
+YANDEXDRIVER_PATH     = "drivers/Windows/yandexdriver.exe"
 
 # Выход
 OUT_CSV_DELTA         = "Csv/Reviews/NewReviews/yamaps_new_since.csv"

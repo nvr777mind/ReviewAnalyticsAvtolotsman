@@ -73,7 +73,7 @@ YEARS_LIMIT_HINT    = 2
 
 # ===== БРАУЗЕР (Yandex) =====
 YANDEX_BROWSER_BINARY = "/Applications/Yandex.app/Contents/MacOS/Yandex"
-YANDEXDRIVER_PATH     = "drivers/yandexdriver"
+YANDEXDRIVER_PATH     = "drivers/Windows/yandexdriver.exe"
 PROFILE_DIR           = str(Path.home() / ".yandex-2gis-scraper")
 
 # ===== 2ГИС СЕЛЕКТОРЫ =====

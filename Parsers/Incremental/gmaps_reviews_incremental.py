@@ -37,7 +37,7 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 
 # ====== НАСТРОЙКИ ======
-DRIVER_PATH    = "drivers/yandexdriver"  # при необходимости поменяй под свою ОС
+DRIVER_PATH    = "drivers/Windows/yandexdriver.exe"  # при необходимости поменяй под свою ОС
 YANDEX_BINARY  = "/Applications/Yandex.app/Contents/MacOS/Yandex"
 URLS_FILE      = "Urls/gmaps_urls.txt"
 

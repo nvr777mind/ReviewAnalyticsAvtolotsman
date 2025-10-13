@@ -22,7 +22,7 @@ from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import NoSuchWindowException, WebDriverException
 
 # ====== НАСТРОЙКИ ======
-DRIVER_PATH    = "drivers/yandexdriver"  # для Windows укажи свой путь
+DRIVER_PATH    = "drivers/Windows/yandexdriver.exe"  # для Windows укажи свой путь
 YANDEX_BINARY  = "/Applications/Yandex.app/Contents/MacOS/Yandex"
 URLS_FILE      = "Urls/gmaps_urls.txt"
 
