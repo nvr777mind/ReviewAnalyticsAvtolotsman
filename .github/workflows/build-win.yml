@@ -1,4 +1,4 @@
-name: build-windows-exe-debug
+name: build-windows-exe
 
 on:
   workflow_dispatch: {}
@@ -8,49 +8,42 @@ on:
 jobs:
   build:
     runs-on: windows-latest
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Show repository tree (top level)
-        shell: powershell
-        run: |
-          Get-ChildItem -Force
-          Write-Host "----"
-          Get-ChildItem -Force Interface, Csv, Parsers, DataAnalytics, Lexicons, Urls, drivers -Recurse -ErrorAction SilentlyContinue
-
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.9.6'   # поставь свою версию
+          python-version: '3.9.6'   # поменяй на свою версию (3.10/3.11 и т.д.)
 
-      - name: pip bootstrap
+      - name: Cache pip
+        uses: actions/cache@v4
+        with:
+          path: ~\AppData\Local\pip\Cache
+          key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
+          restore-keys: ${{ runner.os }}-pip-
+
+      - name: Install dependencies
         shell: powershell
         run: |
-          python -V
-          python -m pip install --upgrade pip setuptools wheel
+          python -m pip install --upgrade pip
           if (Test-Path requirements.txt) {
             pip install -r requirements.txt
           }
-          # На всякий случай: то, что PyInstaller любит
-          pip install pyinstaller pyqt6 matplotlib pywin32-ctypes packaging
+          # Часто нужны для GUI/рисунков/сборки
+          pip install pyinstaller pyqt6 matplotlib
 
-      - name: Freeze list
-        shell: powershell
-        run: pip freeze
-
-      - name: Build GUI (DEBUG log)
+      # ========== 1) GUI ==========
+      - name: Build GUI (ReviewAnalytics.exe)
         shell: powershell
         run: |
-          if (-Not (Test-Path "Interface\interface.py")) {
-            Write-Error "Interface\interface.py not found"
-          }
           pyinstaller Interface/interface.py `
             --noconfirm `
             --onefile `
             --windowed `
             --name ReviewAnalytics `
-            --log-level DEBUG `
             --collect-submodules PyQt6 `
             --collect-data PyQt6 `
             --collect-data matplotlib `
@@ -65,12 +58,50 @@ jobs:
             --add-binary "drivers\*.exe;drivers" `
             --add-binary "drivers\*.dll;drivers"
 
-      - name: Upload GUI artifact
-        if: always()
+      # ========== 2) Основные парсеры ==========
+      - name: Build parsers (.exe)
+        shell: powershell
+        run: |
+          if (Test-Path "Parsers\gmaps_reviews.py")  { pyinstaller Parsers/gmaps_reviews.py  --noconfirm --onefile --name gmaps_reviews }
+          if (Test-Path "Parsers\yamaps_reviews.py") { pyinstaller Parsers/yamaps_reviews.py --noconfirm --onefile --name yamaps_reviews }
+          if (Test-Path "Parsers\2gis_reviews.py")   { pyinstaller Parsers/2gis_reviews.py   --noconfirm --onefile --name 2gis_reviews }
+
+      # ========== 3) Merge/Analytics (тоже отдельные exe, т.к. дергаются через QProcess) ==========
+      - name: Build merge & analytics (.exe)
+        shell: powershell
+        run: |
+          if (Test-Path "Csv\Reviews\merged_reviews.py")                { pyinstaller Csv/Reviews/merged_reviews.py                --noconfirm --onefile --name merged_reviews }
+          if (Test-Path "DataAnalytics\add_sentiment.py")               { pyinstaller DataAnalytics/add_sentiment.py               --noconfirm --onefile --name add_sentiment }
+          if (Test-Path "Csv\Summary\merged_summary.py")                { pyinstaller Csv/Summary/merged_summary.py                --noconfirm --onefile --name merged_summary }
+          if (Test-Path "Csv\Reviews\NewReviews\merged_new_reviews.py") { pyinstaller Csv/Reviews/NewReviews/merged_new_reviews.py --noconfirm --onefile --name merged_new_reviews }
+          if (Test-Path "Csv\Summary\NewSummary\merged_new_summary.py") { pyinstaller Csv/Summary/NewSummary/merged_new_summary.py --noconfirm --onefile --name merged_new_summary }
+
+      # ========== 4) Инкрементальные парсеры (динамически, префикс incr_) ==========
+      - name: Build incremental parsers (incr_*.exe)
+        shell: powershell
+        run: |
+          $dir = "Parsers\Incremental"
+          if (Test-Path $dir) {
+            $files = Get-ChildItem -Path $dir -Filter "*.py"
+            foreach ($f in $files) {
+              $name = "incr_" + [System.IO.Path]::GetFileNameWithoutExtension($f.FullName)
+              pyinstaller $f.FullName --noconfirm --onefile --name $name
+            }
+          }
+
+      # ========== 5) Публикация ==========
+      - name: Upload artifacts (bundle)
         uses: actions/upload-artifact@v4
         with:
-          name: ReviewAnalytics-GUI-debug
+          name: ReviewAnalytics-bundle
           path: |
             dist/ReviewAnalytics.exe
-            build/ReviewAnalytics/*
-            *.spec
+            dist/gmaps_reviews.exe
+            dist/yamaps_reviews.exe
+            dist/2gis_reviews.exe
+            dist/merged_reviews.exe
+            dist/add_sentiment.exe
+            dist/merged_summary.exe
+            dist/merged_new_reviews.exe
+            dist/merged_new_summary.exe
+            dist/incr_*.exe
