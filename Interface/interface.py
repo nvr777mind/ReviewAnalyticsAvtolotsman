@@ -1232,7 +1232,7 @@ class MainWindow(QMainWindow):
             program, args = _script_cmd(path)
             proc.setProgram(program)
             proc.setArguments(args)
-            proc.setWorkingDirectory(str(Path(".").resolve()))
+            proc.setWorkingDirectory(str(_app_dir()))
             proc.readyReadStandardOutput.connect(
                 lambda p=proc, n=name: self._append_log(f"[{n}] {bytes(p.readAllStandardOutput()).decode('utf-8', errors='replace')}")
             )
@@ -1267,7 +1267,7 @@ class MainWindow(QMainWindow):
         program, args = _script_cmd(path)
         proc.setProgram(program)
         proc.setArguments(args)
-        proc.setWorkingDirectory(str(Path(".").resolve()))
+        proc.setWorkingDirectory(str(_app_dir()))
         proc.readyReadStandardOutput.connect(
             lambda p=proc, n=name: self._append_log(f"[{n}] {bytes(p.readAllStandardOutput()).decode('utf-8', errors='replace')}")
         )
@@ -1355,7 +1355,7 @@ class MainWindow(QMainWindow):
             program, args = _script_cmd(path)
             proc.setProgram(program)
             proc.setArguments(args)
-            proc.setWorkingDirectory(str(Path(".").resolve()))
+            proc.setWorkingDirectory(str(_app_dir()))
             proc.readyReadStandardOutput.connect(
                 lambda p=proc, n=name: self._append_log(f"[INCR {n}] {bytes(p.readAllStandardOutput()).decode('utf-8', errors='replace')}")
             )
@@ -1394,7 +1394,7 @@ class MainWindow(QMainWindow):
         program, args = _script_cmd(path)
         proc.setProgram(program)
         proc.setArguments(args)
-        proc.setWorkingDirectory(str(Path(".").resolve()))
+        proc.setWorkingDirectory(str(_app_dir()))
         proc.readyReadStandardOutput.connect(
             lambda p=proc, n=name: self._append_log(f"[{n}] {bytes(p.readAllStandardOutput()).decode('utf-8', errors='replace')}")
         )

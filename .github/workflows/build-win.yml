@@ -1,5 +1,4 @@
 name: build-windows-exe
-
 on:
   workflow_dispatch: {}
   push:
@@ -8,110 +7,85 @@ on:
 jobs:
   build:
     runs-on: windows-latest
-
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: '3.9.6'
 
-      - name: Cache pip
-        uses: actions/cache@v4
+      - uses: actions/cache@v4
         with:
           path: ~\AppData\Local\pip\Cache
           key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
           restore-keys: ${{ runner.os }}-pip-
 
-      - name: Install dependencies
+      - name: Install deps
         shell: powershell
         run: |
           python -m pip install --upgrade pip setuptools wheel
           if (Test-Path requirements.txt) { pip install -r requirements.txt }
           pip install pyinstaller pyqt6 matplotlib pywin32-ctypes packaging
 
-      # ========== 1) GUI ==========
-      - name: Build GUI (ReviewAnalytics.exe)
+      # 1) GUI
+      - name: Build GUI
         shell: powershell
         run: |
           pyinstaller Interface/interface.py `
-            --noconfirm `
-            --onefile `
-            --windowed `
-            --name ReviewAnalytics `
-            --collect-submodules PyQt6 `
-            --collect-data PyQt6 `
-            --collect-data matplotlib `
-            --hidden-import PyQt6.QtCore `
-            --hidden-import PyQt6.QtGui `
-            --hidden-import PyQt6.QtWidgets `
+            --noconfirm --onefile --windowed --name ReviewAnalytics `
+            --collect-submodules PyQt6 --collect-data PyQt6 --collect-data matplotlib `
+            --hidden-import PyQt6.QtCore --hidden-import PyQt6.QtGui --hidden-import PyQt6.QtWidgets `
             --hidden-import matplotlib.backends.backend_qtagg `
-            --add-data "Csv;Csv" `
-            --add-data "Lexicons;Lexicons" `
-            --add-data "Urls;Urls" `
-            --add-data "DataAnalytics;DataAnalytics"
-          # драйвер НЕ вшиваем — положим рядом после сборки
+            --add-data "Csv;Csv" --add-data "Lexicons;Lexicons" --add-data "Urls;Urls" --add-data "DataAnalytics;DataAnalytics"
 
-      # ========== 2) Основные парсеры ==========
-      - name: Build parsers (.exe)
+      # 2) Парсеры (exe с именами как у .py) + разложить по папкам
+      - name: Build parsers and place into Parsers/
         shell: powershell
         run: |
-          if (Test-Path "Parsers\gmaps_reviews.py")  { pyinstaller Parsers/gmaps_reviews.py  --noconfirm --onefile --name gmaps_reviews }
-          if (Test-Path "Parsers\yamaps_reviews.py") { pyinstaller Parsers/yamaps_reviews.py --noconfirm --onefile --name yamaps_reviews }
-          if (Test-Path "Parsers\2gis_reviews.py")   { pyinstaller Parsers/2gis_reviews.py   --noconfirm --onefile --name 2gis_reviews }
+          New-Item -ItemType Directory -Force -Path dist\Parsers | Out-Null
+          if (Test-Path "Parsers\gmaps_reviews.py")  { pyinstaller Parsers/gmaps_reviews.py  --noconfirm --onefile --name gmaps_reviews  ; Move-Item dist\gmaps_reviews.exe  dist\Parsers\gmaps_reviews.exe -Force }
+          if (Test-Path "Parsers\yamaps_reviews.py") { pyinstaller Parsers/yamaps_reviews.py --noconfirm --onefile --name yamaps_reviews ; Move-Item dist\yamaps_reviews.exe dist\Parsers\yamaps_reviews.exe -Force }
+          if (Test-Path "Parsers\2gis_reviews.py")   { pyinstaller Parsers/2gis_reviews.py   --noconfirm --onefile --name 2gis_reviews   ; Move-Item dist\2gis_reviews.exe   dist\Parsers\2gis_reviews.exe   -Force }
 
-      # ========== 3) Merge/Analytics ==========
-      - name: Build merge & analytics (.exe)
+      # 3) Merge/Analytics (разложим по исходной структуре)
+      - name: Build merge & analytics and place into tree
         shell: powershell
         run: |
-          if (Test-Path "Csv\Reviews\merged_reviews.py")                { pyinstaller Csv/Reviews/merged_reviews.py                --noconfirm --onefile --name merged_reviews }
-          if (Test-Path "DataAnalytics\add_sentiment.py")               { pyinstaller DataAnalytics/add_sentiment.py               --noconfirm --onefile --name add_sentiment }
-          if (Test-Path "Csv\Summary\merged_summary.py")                { pyinstaller Csv/Summary/merged_summary.py                --noconfirm --onefile --name merged_summary }
-          if (Test-Path "Csv\Reviews\NewReviews\merged_new_reviews.py") { pyinstaller Csv/Reviews/NewReviews/merged_new_reviews.py --noconfirm --onefile --name merged_new_reviews }
-          if (Test-Path "Csv\Summary\NewSummary\merged_new_summary.py") { pyinstaller Csv/Summary/NewSummary/merged_new_summary.py --noconfirm --onefile --name merged_new_summary }
+          New-Item -ItemType Directory -Force -Path dist\Csv\Reviews, dist\Csv\Summary, dist\DataAnalytics, dist\Csv\Reviews\NewReviews, dist\Csv\Summary\NewSummary | Out-Null
+          if (Test-Path "Csv\Reviews\merged_reviews.py")                { pyinstaller Csv/Reviews/merged_reviews.py                --noconfirm --onefile --name merged_reviews      ; Move-Item dist\merged_reviews.exe      dist\Csv\Reviews\merged_reviews.exe           -Force }
+          if (Test-Path "DataAnalytics\add_sentiment.py")               { pyinstaller DataAnalytics/add_sentiment.py               --noconfirm --onefile --name add_sentiment       ; Move-Item dist\add_sentiment.exe       dist\DataAnalytics\add_sentiment.exe          -Force }
+          if (Test-Path "Csv\Summary\merged_summary.py")                { pyinstaller Csv/Summary/merged_summary.py                --noconfirm --onefile --name merged_summary      ; Move-Item dist\merged_summary.exe      dist\Csv\Summary\merged_summary.exe          -Force }
+          if (Test-Path "Csv\Reviews\NewReviews\merged_new_reviews.py") { pyinstaller Csv/Reviews/NewReviews/merged_new_reviews.py --noconfirm --onefile --name merged_new_reviews  ; Move-Item dist\merged_new_reviews.exe  dist\Csv\Reviews\NewReviews\merged_new_reviews.exe -Force }
+          if (Test-Path "Csv\Summary\NewSummary\merged_new_summary.py") { pyinstaller Csv/Summary/NewSummary/merged_new_summary.py --noconfirm --onefile --name merged_new_summary  ; Move-Item dist\merged_new_summary.exe  dist\Csv\Summary\NewSummary\merged_new_summary.exe -Force }
 
-      # ========== 4) Инкрементальные парсеры ==========
-      - name: Build incremental parsers (incr_*.exe)
+      # 4) Инкрементальные парсеры: имя как у .py и папка Parsers/Incremental
+      - name: Build incremental parsers and place into Parsers/Incremental
         shell: powershell
         run: |
-          $dir = "Parsers\Incremental"
-          if (Test-Path $dir) {
-            $files = Get-ChildItem -Path $dir -Filter "*.py"
+          $inc = "Parsers\Incremental"
+          if (Test-Path $inc) {
+            New-Item -ItemType Directory -Force -Path dist\Parsers\Incremental | Out-Null
+            $files = Get-ChildItem -Path $inc -Filter "*.py"
             foreach ($f in $files) {
-              $name = "incr_" + [System.IO.Path]::GetFileNameWithoutExtension($f.FullName)
-              pyinstaller $f.FullName --noconfirm --onefile --name $name
+              $stem = [System.IO.Path]::GetFileNameWithoutExtension($f.Name)
+              pyinstaller $f.FullName --noconfirm --onefile --name $stem
+              Move-Item ("dist\" + $stem + ".exe") ("dist\Parsers\Incremental\" + $stem + ".exe") -Force
             }
           }
 
-      # ========== 5) Положим Windows-драйвер в dist/drivers/Windows ==========
+      # 5) Драйверы: копируем Windows-версию в dist\drivers\Windows (как в коде)
       - name: Copy Windows driver into dist/drivers/Windows
         shell: powershell
         run: |
           if (Test-Path "Drivers\Windows") {
             New-Item -ItemType Directory -Force -Path dist\drivers\Windows | Out-Null
             Copy-Item "Drivers\Windows\*" "dist\drivers\Windows\" -Recurse -Force
-            Write-Host "Drivers copied to dist\drivers\Windows"
             Get-ChildItem dist\drivers\Windows
-          } else {
-            Write-Host "Drivers\Windows not found, skipping driver copy."
           }
 
-      # ========== 6) Публикация ==========
+      # 6) Публикация
       - name: Upload artifacts (bundle)
         uses: actions/upload-artifact@v4
         with:
           name: ReviewAnalytics-bundle
-          path: |
-            dist/ReviewAnalytics.exe
-            dist/gmaps_reviews.exe
-            dist/yamaps_reviews.exe
-            dist/2gis_reviews.exe
-            dist/merged_reviews.exe
-            dist/add_sentiment.exe
-            dist/merged_summary.exe
-            dist/merged_new_reviews.exe
-            dist/merged_new_summary.exe
-            dist/incr_*.exe
-            dist/drivers/**
+          path: dist/**
