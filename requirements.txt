@@ -26,3 +26,20 @@ tzdata==2025.2
 urllib3==2.5.0
 websocket-client==1.8.0
 wsproto==1.2.0
+
+# Основные
+PyQt6==6.7.1
+matplotlib==3.8.4
+plyer==2.1.0
+
+# Для парсеров / сетевого стека
+requests==2.32.3
+beautifulsoup4==4.12.3
+lxml==5.2.1
+tqdm==4.66.5
+
+# Утилиты
+python-dateutil==2.9.0.post0
+urllib3==2.2.2
+charset-normalizer==3.3.2
+idna==3.7
