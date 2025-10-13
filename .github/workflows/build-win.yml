@@ -16,7 +16,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.9'   # поменяй на свою версию (3.10/3.11 и т.д.)
+          python-version: '3.9.6'   # поменяй на свою версию (3.10/3.11 и т.д.)
 
       - name: Cache pip
         uses: actions/cache@v4
