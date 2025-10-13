@@ -15,7 +15,7 @@ from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QTableView,
     QPushButton, QComboBox, QSpinBox, QGroupBox, QFormLayout, QDateEdit,
     QMessageBox, QStyledItemDelegate, QHeaderView, QLabel, QPlainTextEdit,
-    QSizePolicy, QStyleOptionButton, QStyle, QSystemTrayIcon
+    QSizePolicy, QStyleOptionButton, QStyle
 )
 from PyQt6.QtGui import QTextOption, QTextDocument, QPainter
 
@@ -351,11 +351,6 @@ class MainWindow(QMainWindow):
     def __init__(self, df: Optional[pd.DataFrame] = None):
         super().__init__()
         self.setWindowTitle("Reviews Viewer")
-
-        # Системный трей для уведомлений (Qt фолбэк)
-        self._tray = QSystemTrayIcon(self)
-        self._tray.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_MessageBoxInformation))
-        self._tray.setVisible(True)  # важно: иначе showMessage не покажет уведомление
 
         self.resize(1400, 820)
 
@@ -709,15 +704,6 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
 
-        # 2) Qt системный трей (работает без дополнительных зависимостей)
-        try:
-            if hasattr(self, "_tray") and isinstance(self._tray, QSystemTrayIcon) and self._tray.isVisible():
-                # 5 секунд
-                self._tray.showMessage(title, message, QSystemTrayIcon.MessageIcon.Information, 5000)
-                return
-        except Exception:
-            pass
-
         # 3) Фолбэк: окно + статус-бар + лог
         try:
             QMessageBox.information(self, title, message)
@@ -725,7 +711,6 @@ class MainWindow(QMainWindow):
             pass
         self.statusBar().showMessage(f"{title}: {message}")
         self._append_log(f"[NOTIFY] {title}: {message}")
-
 
     @staticmethod
     def _find_col(df: pd.DataFrame, candidates: List[str]) -> Optional[str]:
@@ -759,93 +744,126 @@ class MainWindow(QMainWindow):
         except Exception:
             return None
 
-    def _diff_summaries(self, old_df: pd.DataFrame, new_df: pd.DataFrame) -> List[Tuple[str, str, Dict[str, Any]]]:
+    # ======== ДОБАВЛЕНО: считаем новые отзывы по строкам all_new_since.csv ========
+    def _count_new_since(self) -> Dict[Tuple[str, str], int]:
         """
-        Возвращает список изменений:
-        [(platform, organization, {delta_count, old_count, new_count, old_rating, new_rating})]
+        Возвращает словарь {(platform, organization): count} по строкам из
+        Csv/Reviews/NewReviews/all_new_since.csv. Если файла нет или колонки
+        не найдены — возвращает пустой словарь.
         """
-        plat_col = self._find_col(new_df, ["platform", "Платформа"]) or "platform"
-        org_col  = self._find_col(new_df, ["organization", "Организация"]) or "organization"
+        path = Path("Csv/Reviews/NewReviews/all_new_since.csv")
+        if not path.exists():
+            self._append_log("[NOTIFY] all_new_since.csv не найден — не из чего считать количество новых отзывов.")
+            return {}
+        try:
+            df = pd.read_csv(path, dtype=str, keep_default_na=False)
+        except Exception as e:
+            self._append_log(f"[NOTIFY] Ошибка чтения all_new_since.csv: {e}")
+            return {}
 
-        count_candidates = ["reviews_count", "ratings_count"]
-        rating_candidates = ["rating_avg", "avg_rating"]
+        plat_col = self._find_col(df, ["platform", "Платформа"]) or "platform"
+        org_col  = self._find_col(df, ["organization", "Организация"]) or "organization"
+        if plat_col not in df.columns or org_col not in df.columns:
+            self._append_log("[NOTIFY] В all_new_since.csv нет колонок platform/organization — пропускаю подсчёт новых.")
+            return {}
 
-        count_col_new = self._find_col(new_df, count_candidates)
-        rating_col_new = self._find_col(new_df, rating_candidates)
-        count_col_old = self._find_col(old_df, count_candidates)
-        rating_col_old = self._find_col(old_df, rating_candidates)
+        grp = df.groupby([plat_col, org_col], dropna=False).size()
+        out: Dict[Tuple[str, str], int] = {}
+        for (p, o), n in grp.items():
+            cnt = int(n)
+            if cnt > 0:
+                key = (str(p).strip(), str(o).strip())
+                out[key] = cnt
+        return out
 
-        if (count_col_new is None and rating_col_new is None) or (plat_col not in new_df.columns or org_col not in new_df.columns):
-            return []
+    # ======== ЗАМЕНЕНО: уведомления используют _count_new_since() ========
+    def _send_incremental_notifications(self):
+        """
+        Уведомления после инкрементального слияния:
+        - количество новых комментариев берём из all_new_since.csv (считаем строки);
+        - изменения рейтинга определяем по разнице all_new_summary.csv vs all_summary.csv;
+        - после сравнения перезаписываем all_summary.csv содержимым all_new_summary.csv.
+        """
+        # 1) Считаем новые отзывы по строкам all_new_since.csv
+        since_counts = self._count_new_since()  # {(platform, org): count}
 
-        old_map: Dict[Tuple[str, str], Dict[str, Any]] = {}
-        if plat_col in old_df.columns and org_col in old_df.columns:
-            for _, row in old_df.iterrows():
-                key = (str(row.get(plat_col, "")).strip(), str(row.get(org_col, "")).strip())
-                old_map[key] = {
-                    "count": self._to_int(row.get(count_col_old)) if count_col_old else None,
-                    "rating": self._to_float(row.get(rating_col_old)) if rating_col_old else None,
-                }
+        # 2) Загружаем сводки для сравнения рейтингов
+        new_path = Path("Csv/Summary/NewSummary/all_new_summary.csv")
+        old_path = Path("Csv/Summary/all_summary.csv")
+
+        new_df = None
+        old_df = None
+
+        if not new_path.exists():
+            self._append_log("[NOTIFY] all_new_summary.csv не найден — проверять рейтинг нечего.")
+        else:
+            try:
+                new_df = pd.read_csv(new_path, dtype=str, keep_default_na=False)
+            except Exception as e:
+                self._append_log(f"[NOTIFY] Ошибка чтения all_new_summary.csv: {e}")
+
+            if old_path.exists():
+                try:
+                    old_df = pd.read_csv(old_path, dtype=str, keep_default_na=False)
+                except Exception as e:
+                    self._append_log(f"[NOTIFY] Ошибка чтения all_summary.csv: {e}")
+
+        # 3) Построим карту старых и новых рейтингов
+        rating_changes: Dict[Tuple[str, str], Tuple[Optional[float], Optional[float]]] = {}
+        if new_df is not None:
+            plat_col = self._find_col(new_df, ["platform", "Платформа"]) or "platform"
+            org_col  = self._find_col(new_df, ["organization", "Организация"]) or "organization"
+            rating_candidates = ["rating_avg", "avg_rating"]
+            rating_col_new = self._find_col(new_df, rating_candidates)
+
+            old_map: Dict[Tuple[str, str], Optional[float]] = {}
+            if old_df is not None:
+                rating_col_old = self._find_col(old_df, rating_candidates)
+                if rating_col_old:
+                    for _, row in old_df.iterrows():
+                        key = (str(row.get(plat_col, "")).strip(),
+                               str(row.get(org_col, "")).strip())
+                        old_map[key] = self._to_float(row.get(rating_col_old))
+
+            if rating_col_new:
+                for _, row in new_df.iterrows():
+                    key = (str(row.get(plat_col, "")).strip(),
+                           str(row.get(org_col, "")).strip())
+                    new_rating = self._to_float(row.get(rating_col_new))
+                    old_rating = old_map.get(key)
+                    rating_changes[key] = (old_rating, new_rating)
+
+        # 4) Обновляем all_summary.csv из all_new_summary.csv (даже если old отсутствовал)
+        if new_df is not None:
+            try:
+                new_df.to_csv(old_path, index=False)
+                self._append_log("[NOTIFY] Обновил all_summary.csv из all_new_summary.csv (после сравнения).")
+            except Exception as e:
+                self._append_log(f"[NOTIFY] Не удалось обновить all_summary.csv: {e}")
+
+        # 5) Сводим ключи: там, где есть новые отзывы ИЛИ есть изменение рейтинга
+        all_keys = set(since_counts.keys()) | set(rating_changes.keys())
 
         changes: List[Tuple[str, str, Dict[str, Any]]] = []
-        for _, row in new_df.iterrows():
-            p = str(row.get(plat_col, "")).strip()
-            o = str(row.get(org_col, "")).strip()
-            key = (p, o)
-            new_count = self._to_int(row.get(count_col_new)) if count_col_new else None
-            new_rating = self._to_float(row.get(rating_col_new)) if rating_col_new else None
+        for key in sorted(all_keys):
+            p, o = key
+            delta_count = since_counts.get(key, 0)
 
-            old = old_map.get(key, {"count": None, "rating": None})
-            old_count = old.get("count")
-            old_rating = old.get("rating")
-
-            delta_count = None
-            if new_count is not None and old_count is not None:
-                delta_count = new_count - old_count
-            elif new_count is not None and old_count is None and new_count > 0:
-                delta_count = new_count  # новая пара
-
+            old_rating, new_rating = rating_changes.get(key, (None, None))
             rating_changed = False
-            if new_rating is not None and old_rating is not None:
+            if old_rating is not None and new_rating is not None:
                 rating_changed = abs(new_rating - old_rating) >= 0.01
             elif new_rating is not None and old_rating is None:
-                rating_changed = True
+                rating_changed = True  # новая пара
 
-            if (delta_count is not None and delta_count > 0) or rating_changed:
+            if delta_count > 0 or rating_changed:
                 changes.append((p, o, {
-                    "delta_count": delta_count,
-                    "old_count": old_count,
-                    "new_count": new_count,
+                    "delta_count": delta_count if delta_count > 0 else None,
                     "old_rating": old_rating,
                     "new_rating": new_rating
                 }))
-        return changes
 
-    def _send_incremental_notifications(self):
-        """Сравнивает Csv/Summary/all_new_summary.csv и Csv/Summary/all_summary.csv и отправляет уведомления."""
-        new_path = Path("Csv/Summary/NewSummary/all_new_summary.csv")
-        old_path = Path("Csv/Summary/all_summary.csv")
-        if not new_path.exists():
-            self._append_log("[NOTIFY] all_new_summary.csv не найден — уведомлять нечего.")
-            return
-        if not old_path.exists():
-            self._notify("Сводка обновлена", "Создан all_new_summary, но all_summary не найден для сравнения.")
-            return
-        try:
-            new_df = pd.read_csv(new_path, dtype=str, keep_default_na=False)
-            old_df = pd.read_csv(old_path, dtype=str, keep_default_na=False)
-        except Exception as e:
-            self._append_log(f"[NOTIFY] Ошибка чтения сводок: {e}")
-            return
-
-        changes = self._diff_summaries(old_df, new_df)
-
-        try:
-            new_df.to_csv(old_path, index=False)
-            self._append_log("[NOTIFY] Обновил all_summary.csv из all_new_summary.csv (после сравнения).")
-        except Exception as e:
-            self._append_log(f"[NOTIFY] Не удалось обновить all_summary.csv: {e}")
-            
+        # 6) Отправляем уведомления
         if not changes:
             self._notify("Нет изменений", "Новые комментарии и рейтинг без изменений.")
             return
@@ -857,13 +875,15 @@ class MainWindow(QMainWindow):
                 parts = []
                 if d.get("delta_count"):
                     parts.append(f"+{d['delta_count']} комм.")
-                if d.get("old_rating") is not None and d.get("new_rating") is not None and abs(d['new_rating'] - d['old_rating']) >= 0.01:
-                    parts.append(f"рейтинг {d['old_rating']:.2f} → {d['new_rating']:.2f}")
+                if d.get("old_rating") is not None and d.get("new_rating") is not None:
+                    if abs(d["new_rating"] - d["old_rating"]) >= 0.01:
+                        parts.append(f"рейтинг {d['old_rating']:.2f} → {d['new_rating']:.2f}")
                 self._append_log(f"[CHANGE] {p} — {o}: " + (", ".join(parts) if parts else "изменение"))
             return
 
         for p, o, d in changes:
-            if d.get("delta_count") and d["delta_count"] > 0:
+            if d.get("delta_count"):
+                # Количество новых берём из all_new_since.csv (по строкам)
                 self._notify("Новые комментарии", f"{p} — {o}: +{d['delta_count']}")
             if d.get("old_rating") is not None and d.get("new_rating") is not None:
                 if abs(d["new_rating"] - d["old_rating"]) >= 0.01:
@@ -1261,6 +1281,20 @@ class MainWindow(QMainWindow):
         )
         if reply != QMessageBox.StandardButton.Yes:
             return
+
+        # --- ФОЛБЭК: если базовых файлов нет, запускаем полный сбор ---
+        base_reviews = Path("Csv/Reviews/all_reviews.csv")
+        base_summary = Path("Csv/Summary/all_summary.csv")
+        if not base_reviews.exists() or not base_summary.exists():
+            msg = "Базовые файлы не найдены: " + \
+                  ("all_reviews.csv отсутствует; " if not base_reviews.exists() else "") + \
+                  ("all_summary.csv отсутствует; " if not base_summary.exists() else "")
+            self._append_log("[INCR→FULL] " + msg + "запускаю полный сбор.")
+            self.statusBar().showMessage("Нет базовых файлов для инкремента. Запущен полный сбор.")
+            # Запускаем полный сбор БЕЗ повторного подтверждения
+            self.run_full_pipeline(ask_confirm=False)
+            return
+        # --------------------------------------------------------------
 
         incr_scrapers = self._discover_incremental_scripts()
         if not incr_scrapers:
