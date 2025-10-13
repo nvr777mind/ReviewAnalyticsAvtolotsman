@@ -29,6 +29,29 @@ try:
 except Exception:
     plyer_notification = None
 
+def _is_frozen() -> bool:
+    return getattr(sys, "frozen", False)
+
+def _app_dir() -> Path:
+    # В сборке: папка, где лежит твой ReviewAnalytics.exe и соседние exe парсеров
+    if _is_frozen():
+        return Path(sys.executable).resolve().parent
+    # В dev-режиме: корень проекта
+    return Path(".").resolve()
+
+def _script_cmd(py_path: Path) -> tuple[str, list[str]]:
+    """
+    Возвращает (program, args) для QProcess.
+    - В dev: запускаем .py через текущий интерпретатор.
+    - В сборке: запускаем одноимённый .exe, который лежит рядом с GUI.
+    Например, Parsers/gmaps_reviews.py -> gmaps_reviews.exe
+    """
+    if not _is_frozen():
+        return (sys.executable, [str(py_path)])
+
+    exe_name = f"{py_path.stem}.exe"
+    exe_path = _app_dir() / exe_name
+    return (str(exe_path), [])
 
 # ---------- Модель DataFrame → Qt ----------
 class DataFrameModel(QAbstractTableModel):
@@ -1178,7 +1201,7 @@ class MainWindow(QMainWindow):
         self._log.appendPlainText(text.rstrip())
 
     # ---------- Полный сбор ----------
-    def run_full_pipeline(self):
+    def run_full_pipeline(self, ask_confirm: bool = True):
         if self._running:
             QMessageBox.information(self, "Уже выполняется", "Пайплайн уже запущен.")
             return
@@ -1206,8 +1229,9 @@ class MainWindow(QMainWindow):
 
         for name, path in self.SCRAPER_SCRIPTS:
             proc = QProcess(self)
-            proc.setProgram(sys.executable)
-            proc.setArguments([str(path)])
+            program, args = _script_cmd(path)
+            proc.setProgram(program)
+            proc.setArguments(args)
             proc.setWorkingDirectory(str(Path(".").resolve()))
             proc.readyReadStandardOutput.connect(
                 lambda p=proc, n=name: self._append_log(f"[{n}] {bytes(p.readAllStandardOutput()).decode('utf-8', errors='replace')}")
@@ -1240,8 +1264,9 @@ class MainWindow(QMainWindow):
         name, path = self.MERGE_SCRIPTS[idx]
         self._append_log(f"[{name}] Запуск {path}…")
         proc = QProcess(self)
-        proc.setProgram(sys.executable)
-        proc.setArguments([str(path)])
+        program, args = _script_cmd(path)
+        proc.setProgram(program)
+        proc.setArguments(args)
         proc.setWorkingDirectory(str(Path(".").resolve()))
         proc.readyReadStandardOutput.connect(
             lambda p=proc, n=name: self._append_log(f"[{n}] {bytes(p.readAllStandardOutput()).decode('utf-8', errors='replace')}")
@@ -1259,12 +1284,20 @@ class MainWindow(QMainWindow):
 
     # ---------- Инкрементальный сбор ----------
     def _discover_incremental_scripts(self) -> List[Tuple[str, Path]]:
-        """Находит все *.py в Parsers/Incremental и возвращает список (name, path)."""
         inc_dir = Path("Parsers/Incremental")
         scripts = []
-        if inc_dir.exists():
-            for p in sorted(inc_dir.glob("*.py")):
-                scripts.append((p.stem, p))
+        if not _is_frozen():
+            if inc_dir.exists():
+                for p in sorted(inc_dir.glob("*.py")):
+                    scripts.append((p.stem, p))
+        else:
+            # В сборке exe лежат рядом с GUI; берём все exe с теми же именами, что были .py
+            # Если хочешь, можно фильтровать по префиксу (например, "incr_*.exe")
+            for p in sorted(_app_dir().glob("*.exe")):
+                name = p.stem
+                # отсеять главный GUI и не-наш софт
+                if name.lower() not in {"reviewanalytics"}:
+                    scripts.append((name, p))
         return scripts
 
     def run_incremental_pipeline(self):
@@ -1319,8 +1352,9 @@ class MainWindow(QMainWindow):
 
         for name, path in incr_scrapers:
             proc = QProcess(self)
-            proc.setProgram(sys.executable)
-            proc.setArguments([str(path)])
+            program, args = _script_cmd(path)
+            proc.setProgram(program)
+            proc.setArguments(args)
             proc.setWorkingDirectory(str(Path(".").resolve()))
             proc.readyReadStandardOutput.connect(
                 lambda p=proc, n=name: self._append_log(f"[INCR {n}] {bytes(p.readAllStandardOutput()).decode('utf-8', errors='replace')}")
@@ -1357,8 +1391,9 @@ class MainWindow(QMainWindow):
         name, path = self.INCR_MERGE_SCRIPTS[idx]
         self._append_log(f"[{name}] Запуск {path}…")
         proc = QProcess(self)
-        proc.setProgram(sys.executable)
-        proc.setArguments([str(path)])
+        program, args = _script_cmd(path)
+        proc.setProgram(program)
+        proc.setArguments(args)
         proc.setWorkingDirectory(str(Path(".").resolve()))
         proc.readyReadStandardOutput.connect(
             lambda p=proc, n=name: self._append_log(f"[{n}] {bytes(p.readAllStandardOutput()).decode('utf-8', errors='replace')}")
