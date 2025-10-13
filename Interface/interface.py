@@ -39,19 +39,23 @@ def _app_dir() -> Path:
     # В dev-режиме: корень проекта
     return Path(".").resolve()
 
-def _script_cmd(py_path: Path) -> tuple[str, list[str]]:
+def _runtime_path(py_rel_path: Path) -> Path:
     """
-    Возвращает (program, args) для QProcess.
-    - В dev: запускаем .py через текущий интерпретатор.
-    - В сборке: запускаем одноимённый .exe, который лежит рядом с GUI.
-    Например, Parsers/gmaps_reviews.py -> gmaps_reviews.exe
+    К путям типа Parsers/foo.py вернёт:
+      - dev: Parsers/foo.py
+      - build: <base>/Parsers/foo.exe
     """
-    if not _is_frozen():
-        return (sys.executable, [str(py_path)])
+    return (_app_dir() / py_rel_path).with_suffix(".exe") if _is_frozen() else py_rel_path
 
-    exe_name = f"{py_path.stem}.exe"
-    exe_path = _app_dir() / exe_name
-    return (str(exe_path), [])
+def _script_cmd(py_rel_path: Path) -> tuple[str, list[str]]:
+    """
+    Что запускать в QProcess:
+      - dev: python <py>
+      - build: <exe> (без аргументов)
+    """
+    if _is_frozen():
+        return (str(_runtime_path(py_rel_path)), [])
+    return (sys.executable, [str(py_rel_path)])
 
 # ---------- Модель DataFrame → Qt ----------
 class DataFrameModel(QAbstractTableModel):
@@ -1216,10 +1220,17 @@ class MainWindow(QMainWindow):
         if reply != QMessageBox.StandardButton.Yes:
             return
 
-        missing = [str(p) for _, p in (self.SCRAPER_SCRIPTS + self.MERGE_SCRIPTS) if not p.exists()]
+        # Проверяем именно runtime-пути (.py в dev, .exe в сборке)
+        targets = [p for _, p in (self.SCRAPER_SCRIPTS + self.MERGE_SCRIPTS)]
+        missing = []
+        for p in targets:
+            rp = _runtime_path(p)
+            if not rp.exists():
+                missing.append(str(rp))
+
         if missing:
             QMessageBox.critical(self, "Скрипты не найдены",
-                                 "Отсутствуют файлы:\n" + "\n".join(missing))
+                                "Отсутствуют файлы:\n" + "\n".join(missing))
             return
 
         self._running = True
@@ -1283,22 +1294,21 @@ class MainWindow(QMainWindow):
         self._run_merges_sequentially(idx + 1)
 
     # ---------- Инкрементальный сбор ----------
-    def _discover_incremental_scripts(self) -> List[Tuple[str, Path]]:
+    def _discover_incremental_scripts(self) -> list[tuple[str, Path]]:
         inc_dir = Path("Parsers/Incremental")
         scripts = []
         if not _is_frozen():
             if inc_dir.exists():
                 for p in sorted(inc_dir.glob("*.py")):
                     scripts.append((p.stem, p))
-        else:
-            # В сборке exe лежат рядом с GUI; берём все exe с теми же именами, что были .py
-            # Если хочешь, можно фильтровать по префиксу (например, "incr_*.exe")
-            for p in sorted(_app_dir().glob("*.exe")):
-                name = p.stem
-                # отсеять главный GUI и не-наш софт
-                if name.lower() not in {"reviewanalytics"}:
-                    scripts.append((name, p))
+            return scripts
+        # В сборке берём *.exe из dist/Parsers/Incremental
+        exe_dir = _app_dir() / "Parsers" / "Incremental"
+        if exe_dir.exists():
+            for p in sorted(exe_dir.glob("*.exe")):
+                scripts.append((p.stem, p))
         return scripts
+
 
     def run_incremental_pipeline(self):
         if self._running:
@@ -1335,10 +1345,17 @@ class MainWindow(QMainWindow):
                                  "Не найдено ни одного инкрементального скрипта в Parsers/Incremental/*.py")
             return
 
-        missing = [str(p) for _, p in (incr_scrapers + self.INCR_MERGE_SCRIPTS) if not p.exists()]
+        # Проверяем именно runtime-пути (.py в dev, .exe в сборке)
+        targets = [p for _, p in (self.SCRAPER_SCRIPTS + self.MERGE_SCRIPTS)]
+        missing = []
+        for p in targets:
+            rp = _runtime_path(p)
+            if not rp.exists():
+                missing.append(str(rp))
+
         if missing:
             QMessageBox.critical(self, "Скрипты не найдены",
-                                 "Отсутствуют файлы:\n" + "\n".join(missing))
+                                "Отсутствуют файлы:\n" + "\n".join(missing))
             return
 
         # Стартуем инкрементальные парсеры параллельно
