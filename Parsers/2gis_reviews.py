@@ -44,10 +44,10 @@ OUT_CSV = "Csv/Reviews/2gis_reviews.csv"
 OUT_CSV_SUMMARY = "Csv/Summary/2gis_summary.csv"
 
 # ===== ПАРАМЕТРЫ =====
-WAIT_TIMEOUT        = 20
-BURSTS              = 30
-BURST_MS            = 1100
-IDLE_LIMIT          = 3
+WAIT_TIMEOUT        = 8
+BURSTS              = 12
+BURST_MS            = 520
+IDLE_LIMIT          = 1
 YEARS_LIMIT         = 2
 ENFORCE_DATE_CUTOFF = False
 

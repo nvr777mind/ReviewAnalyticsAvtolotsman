@@ -1,16 +1,16 @@
 # -*- coding: utf-8 -*-
 """
-Инкрементальный сбор отзывов с 2ГИС БЕЗ проверки наличия в all_reviews:
-- Пороговая дата берётся из Csv/Reviews/all_reviews.csv для платформы '2GIS' (только для остановки по дате).
-- По каждой ссылке из Urls/2gis_urls.txt:
-    * открываем страницу, переходим на «Отзывы»,
-    * снимаем summary (rating_avg, ratings_count, reviews_count),
-    * скроллим и пишем ТОЛЬКО отзывы СТРОГО НОВЕЕ пороговой даты,
-    * как только встретился отзыв с датой <= пороговой — останавливаемся.
-- Дедуп делаем только в пределах текущего запуска (author_norm + text_signature), чтобы не словить дубль из-за особенностей скролла.
-- Новые отзывы → Csv/Reviews/NewReviews/2gis_new_since.csv
-- Новый summary → Csv/Summary/NewSummary/2gis_summary_new.csv, где reviews_count = старое из Csv/Summary/2gis_summary.csv + добавленные новые.
-Совместим с Python 3.9.
+Инкрементальный сбор отзывов с 2ГИС (ускорённая версия).
+
+Главные изменения скорости:
+- Блокируем тяжёлые ресурсы (картинки/шрифты/видео/тайлы) через CDP.
+- Меньше ожиданий: короче таймауты, бурсты короче, ранняя остановка.
+- Между бурстами не спим фиксированно, а ждём коротко появления новых карточек
+  или роста scrollHeight.
+
+Переключатели скорости:
+    SPEED_PROFILE: "safe" | "fast" | "ultra"
+    HEADLESS: False/True (True быстрее, но может хуже проходить защиту)
 """
 
 import csv, re, time, unicodedata
@@ -43,18 +43,38 @@ OUT_CSV_SUMMARY_NEW  = "Csv/Summary/NewSummary/2gis_summary_new.csv"
 
 PLATFORM             = "2GIS"
 
-# ===== БРАУЗЕР =====
+# ===== ПРОФИЛИ СКОРОСТИ =====
+# safe – ближе к исходному поведению; fast – ощутимо быстрее; ultra – максимально агрессивно
+SPEED_PROFILE = "fast"   # "safe" | "fast" | "ultra"
+HEADLESS      = False    # Можно True для максимальной скорости (может хуже проходить защиту)
+
+if SPEED_PROFILE == "safe":
+    WAIT_TIMEOUT   = 15
+    BURSTS         = 28
+    BURST_MS       = 900
+    IDLE_LIMIT     = 3
+    BETWEEN_BURSTS_SOFT_WAIT = 0.6
+elif SPEED_PROFILE == "ultra":
+    WAIT_TIMEOUT   = 8
+    BURSTS         = 12
+    BURST_MS       = 520
+    IDLE_LIMIT     = 1
+    BETWEEN_BURSTS_SOFT_WAIT = 0.25
+else:  # fast (по умолчанию)
+    WAIT_TIMEOUT   = 10
+    BURSTS         = 18
+    BURST_MS       = 700
+    IDLE_LIMIT     = 2
+    BETWEEN_BURSTS_SOFT_WAIT = 0.4
+
+# Остальные параметры
+ENFORCE_DATE_CUTOFF = False
+YEARS_LIMIT_HINT    = 2
+
+# ===== БРАУЗЕР (Yandex) =====
 YANDEX_BROWSER_BINARY = "/Applications/Yandex.app/Contents/MacOS/Yandex"
 YANDEXDRIVER_PATH     = "drivers/yandexdriver"
 PROFILE_DIR           = str(Path.home() / ".yandex-2gis-scraper")
-
-# ===== ПАРАМЕТРЫ =====
-WAIT_TIMEOUT        = 20
-BURSTS              = 30
-BURST_MS            = 1100
-IDLE_LIMIT          = 3
-ENFORCE_DATE_CUTOFF = False
-YEARS_LIMIT_HINT    = 2
 
 # ===== 2ГИС СЕЛЕКТОРЫ =====
 AUTHOR_SEL       = "span._wrdavn > span._16s5yj36"
@@ -148,45 +168,7 @@ def parse_ru_date_to_iso(s: Optional[str]) -> Optional[str]:
 
     return None
 
-# ===== БРАУЗЕР =====
-def build_options() -> Options:
-    opts = Options()
-    opts.binary_location = YANDEX_BROWSER_BINARY
-    opts.add_argument("--start-maximized")
-    opts.add_argument("--no-sandbox")
-    opts.add_argument("--disable-dev-shm-usage")
-    opts.add_argument("--lang=ru-RU,ru")
-    opts.page_load_strategy = "eager"
-    opts.add_argument(f"--user-data-dir={PROFILE_DIR}")
-    opts.add_argument("--profile-directory=Default")
-    opts.add_experimental_option("excludeSwitches", ["enable-automation"])
-    opts.add_experimental_option("useAutomationExtension", False)
-    return opts
-
-def setup_driver() -> webdriver.Chrome:
-    if not Path(YANDEX_BROWSER_BINARY).exists():
-        raise FileNotFoundError(f"Нет Yandex Browser: {YANDEX_BROWSER_BINARY}")
-    if not Path(YANDEXDRIVER_PATH).is_file():
-        raise FileNotFoundError(f"Нет yandexdriver: {YANDEXDRIVER_PATH}")
-    service = Service(executable_path=YANDEXDRIVER_PATH)
-    drv = webdriver.Chrome(service=service, options=build_options())
-    drv.set_page_load_timeout(120); drv.set_script_timeout(120); drv.implicitly_wait(0)
-    try:
-        drv.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {
-            "source": "Object.defineProperty(navigator, 'webdriver', {get: () => undefined});"
-        })
-    except:
-        pass
-    return drv
-
-def ensure_window(drv) -> bool:
-    try: return bool(drv.window_handles)
-    except: return False
-
-def safe_get(drv, url: str) -> bool:
-    try: drv.get(url); return True
-    except (NoSuchWindowException, WebDriverException): return False
-
+# ===== УСКОРИТЕЛИ (CSS/ресурсы) =====
 def inject_perf_css(driver):
     try:
         driver.execute_script("""
@@ -197,6 +179,77 @@ def inject_perf_css(driver):
             }
         """)
     except: pass
+
+def block_heavy_assets(driver):
+    """CDP: блокируем тяжёлые форматы, чтобы 2ГИС грузился быстрее."""
+    try:
+        driver.execute_cdp_cmd("Network.enable", {})
+        driver.execute_cdp_cmd("Network.setBlockedURLs", {"urls": [
+            "*.jpg","*.jpeg","*.png","*.gif","*.webp","*.svg",
+            "*.woff","*.woff2","*.ttf","*.otf",
+            "*tile*","*tiles*","*mapbox*","*yastatic*/*maps*","*static-maps*","*ads*"
+        ]})
+    except Exception:
+        pass
+
+# ===== БРАУЗЕР =====
+def build_options() -> Options:
+    opts = Options()
+    opts.binary_location = YANDEX_BROWSER_BINARY
+    # Визуальный рендер не нужен для скорости
+    if HEADLESS:
+        # у Яндекс-браузера (Chromium base) обычно работает new headless
+        opts.add_argument("--headless=new")
+    opts.add_argument("--start-maximized")
+    opts.add_argument("--no-sandbox")
+    opts.add_argument("--disable-dev-shm-usage")
+    opts.add_argument("--lang=ru-RU,ru")
+    # подгружаем только нужное – страницы сами ждём целевые элементы
+    opts.page_load_strategy = "eager"
+    # профиль — чтобы не логиниться каждый раз (но без лишнего кэша)
+    opts.add_argument(f"--user-data-dir={PROFILE_DIR}")
+    opts.add_argument("--profile-directory=Default")
+    opts.add_experimental_option("excludeSwitches", ["enable-automation"])
+    opts.add_experimental_option("useAutomationExtension", False)
+
+    # Отключаем картинки (двойным способом — на случай, если один не подействует)
+    opts.add_argument("--blink-settings=imagesEnabled=false")
+    prefs = {
+        "profile.managed_default_content_settings.images": 2,
+        # Видеоконтент
+        "profile.managed_default_content_settings.media_stream": 2,
+        # Шрифты могут подтормаживать, но иногда влияют на вёрстку — лучше не трогать.
+        # "profile.managed_default_content_settings.fonts": 2,
+    }
+    opts.add_experimental_option("prefs", prefs)
+
+    return opts
+
+def setup_driver() -> webdriver.Chrome:
+    if not Path(YANDEX_BROWSER_BINARY).exists():
+        raise FileNotFoundError(f"Нет Yandex Browser: {YANDEX_BROWSER_BINARY}")
+    if not Path(YANDEXDRIVER_PATH).is_file():
+        raise FileNotFoundError(f"Нет yandexdriver: {YANDEXDRIVER_PATH}")
+    service = Service(executable_path=YANDEXDRIVER_PATH)
+    drv = webdriver.Chrome(service=service, options=build_options())
+    drv.set_page_load_timeout(90); drv.set_script_timeout(90); drv.implicitly_wait(0)
+    try:
+        drv.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {
+            "source": "Object.defineProperty(navigator, 'webdriver', {get: () => undefined});"
+        })
+    except:
+        pass
+    # Ускорители
+    block_heavy_assets(drv)
+    return drv
+
+def ensure_window(drv) -> bool:
+    try: return bool(drv.window_handles)
+    except: return False
+
+def safe_get(drv, url: str) -> bool:
+    try: drv.get(url); return True
+    except (NoSuchWindowException, WebDriverException): return False
 
 def click_cookies_if_any(driver):
     btn_xps = [
@@ -220,7 +273,7 @@ def ensure_reviews_tab(driver):
             try:
                 driver.execute_script("arguments[0].scrollIntoView({block:'center'});", t)
                 driver.execute_script("arguments[0].click();", t)
-                time.sleep(2)
+                time.sleep(0.25)
                 break
             except: pass
     except: pass
@@ -230,7 +283,7 @@ def switch_to_reviews_iframe(driver) -> bool:
         iframes = driver.find_elements(By.TAG_NAME, "iframe")
         for frame in iframes:
             try:
-                driver.switch_to.frame(frame); time.sleep(1)
+                driver.switch_to.frame(frame); time.sleep(0.15)
                 # простая эвристика "внутри есть контент"
                 if len([el for el in driver.find_elements(By.CSS_SELECTOR, "div, span, p") if len((el.text or '').strip()) > 50]) > 0:
                     return True
@@ -273,6 +326,7 @@ def get_scroll_height(driver, container) -> int:
     except: return int(driver.execute_script("return (document.scrollingElement||document.body).scrollHeight;") or 0)
 
 def autoscroll_burst(driver, container, ms: int):
+    """Агрессивная прокрутка короткими шагами (чаще, но без длинных пауз)."""
     try:
         driver.execute_script("arguments[0].scrollIntoView({block:'center'});", container)
         driver.execute_script("arguments[0].focus({preventScroll:true});", container)
@@ -281,11 +335,14 @@ def autoscroll_burst(driver, container, ms: int):
     while time.time() < deadline:
         try:
             ch = int(driver.execute_script("return arguments[0].clientHeight;", container) or 600)
-            step = max(200, int(ch*0.85))
-            driver.execute_script("arguments[0].scrollTop = Math.min(arguments[0].scrollTop + arguments[1], arguments[0].scrollHeight);", container, step)
+            step = max(240, int(ch*0.9))
+            driver.execute_script(
+                "arguments[0].scrollTop = Math.min(arguments[0].scrollTop + arguments[1], arguments[0].scrollHeight);",
+                container, step
+            )
         except:
-            driver.execute_script("window.scrollBy(0, Math.floor(window.innerHeight*0.8));")
-        time.sleep(0.25)
+            driver.execute_script("window.scrollBy(0, Math.floor(window.innerHeight*0.9));")
+        time.sleep(0.12)  # было 0.25
 
 # ===== ПАРСИНГ КАРТОЧКИ =====
 def _rating_from_spans_count(card) -> Optional[float]:
@@ -515,10 +572,28 @@ def collect_visible_batch(driver, cutoff_date: date,
             continue
     return added, met_old
 
-
-
 def _nz(v, zero=0):
     return v if v not in (None, "") else zero
+
+# ===== ВСПОМОГАТЕЛЬНОЕ ОЖИДАНИЕ ПОСЛЕ БУРСТА =====
+def soft_wait_for_growth(driver, container, prev_h: int, prev_cards: int, timeout: float) -> Tuple[int, int]:
+    """Ждём коротко прироста высоты или появления новых карточек (вместо жесткого sleep)."""
+    end = time.time() + timeout
+    last_h = prev_h
+    last_cards = prev_cards
+    while time.time() < end:
+        try:
+            last_h = get_scroll_height(driver, container)
+        except Exception:
+            pass
+        try:
+            last_cards = len(find_review_cards(driver))
+        except Exception:
+            pass
+        if (last_h > prev_h + 2) or (last_cards > prev_cards):
+            break
+        time.sleep(0.05)
+    return last_h, last_cards
 
 # ===== ОСНОВНОЙ ПРОЦЕСС ОДНОГО URL =====
 def process_one_url(url: str,
@@ -533,7 +608,7 @@ def process_one_url(url: str,
         if not ensure_window(driver):
             driver.quit(); return "", [], (None, None, None)
 
-        inject_perf_css(driver); time.sleep(2)
+        inject_perf_css(driver)  # сразу убираем анимации
         org = forced_org or extract_organization_from_url(url) or ""
 
         # summary (до фреймов/таба)
@@ -558,6 +633,7 @@ def process_one_url(url: str,
         idle = 0
         stop_by_age = False
 
+        # стартовая партия
         added, met_old = collect_visible_batch(driver, cutoff_date, dedupe_index, results)
         if met_old: stop_by_age = True
 
@@ -565,16 +641,18 @@ def process_one_url(url: str,
             if stop_by_age: break
             prev_len = len(results)
             prev_h = get_scroll_height(driver, container)
+            prev_cards = len(find_review_cards(driver))
 
             autoscroll_burst(driver, container, BURST_MS)
-            time.sleep(1.0)
+            # вместо sleep(1.0) — ждём коротко рост/новые карточки
+            new_h, new_cards = soft_wait_for_growth(driver, container, prev_h, prev_cards, BETWEEN_BURSTS_SOFT_WAIT)
 
             added, met_old = collect_visible_batch(driver, cutoff_date, dedupe_index, results)
             if met_old: stop_by_age = True
 
-            new_h = get_scroll_height(driver, container)
             height_grew = new_h > prev_h + 2
-            idle = 0 if (added or len(results) > prev_len or height_grew) else (idle + 1)
+            cards_grew  = new_cards > prev_cards
+            idle = 0 if (added or len(results) > prev_len or height_grew or cards_grew) else (idle + 1)
             if idle >= IDLE_LIMIT: break
 
         for r in results:
@@ -600,7 +678,7 @@ def main():
 
     # Пороговые даты из all_reviews (только для остановки по дате)
     latest_by_org = load_latest_dates_by_org(ALL_REVIEWS_CSV, PLATFORM)
-    print(f"[INFO] Пороговые даты: {len(latest_by_org)} орг.")
+    print(f"[INFO] Пороговые даты: {len(latest_by_org)} орг. | speed={SPEED_PROFILE} | headless={HEADLESS}")
 
     # Старый summary (для инкремента reviews_count)
     prev_counts = load_prev_reviews_count(SUMMARY_BASE_CSV, PLATFORM)
@@ -614,7 +692,6 @@ def main():
     w_rev.writeheader()
 
     total_written_by_org: Dict[str, int] = {}
-    # КОПИМ ЕДИНЫЙ summary ПО ОРГАНИЗАЦИИ
     summary_by_org: Dict[str, Dict[str, float]] = {}
 
     try:
@@ -645,21 +722,14 @@ def main():
             total_written_by_org[ok] = total_written_by_org.get(ok, 0) + written
             print(f"  новых записано: {written}")
 
-            # Агрегируем summary по организации (берём последнюю ненулевую метрику, иначе 0)
-            try:
-                if ok not in summary_by_org:
-                    summary_by_org[ok] = {
-                        "organization": org or org_slug or "",
-                        "rating_avg":   _nz(rating_avg, 0),
-                        "ratings_count":_nz(ratings_count, 0),
-                        "reviews_count":_nz(reviews_count, 0),
-                    }
-            except Exception:
-                if summary_by_org is not None:
-                    summary_by_org.writerow({
-                        "organization": org, "platform": "2GIS",
-                        "rating_avg": 0, "ratings_count": 0, "reviews_count": 0
-                    })
+            # Агрегируем summary по организации
+            if ok not in summary_by_org:
+                summary_by_org[ok] = {
+                    "organization": org or org_slug or "",
+                    "rating_avg":   _nz(rating_avg, 0),
+                    "ratings_count":_nz(ratings_count, 0),
+                    "reviews_count":_nz(reviews_count, 0),
+                }
 
     finally:
         try: f_rev.flush(); f_rev.close()
