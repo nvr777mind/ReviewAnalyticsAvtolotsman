@@ -1,4 +1,5 @@
 name: build-windows-exe
+
 on:
   workflow_dispatch: {}
   push:
@@ -7,6 +8,7 @@ on:
 jobs:
   build:
     runs-on: windows-latest
+
     steps:
       - uses: actions/checkout@v4
 
@@ -25,7 +27,10 @@ jobs:
         run: |
           python -m pip install --upgrade pip setuptools wheel
           if (Test-Path requirements.txt) { pip install -r requirements.txt }
-          pip install pyinstaller pyqt6 matplotlib pywin32-ctypes packaging
+          # Явно ставим большие пакеты, чтобы точно были в окружении сборки
+          pip install pandas numpy pyinstaller pyqt6 matplotlib pywin32-ctypes packaging
+          echo "---- pip freeze ----"
+          pip freeze
 
       # 1) GUI
       - name: Build GUI
@@ -33,7 +38,10 @@ jobs:
         run: |
           pyinstaller Interface/interface.py `
             --noconfirm --onefile --windowed --name ReviewAnalytics `
-            --collect-submodules PyQt6 --collect-data PyQt6 --collect-data matplotlib `
+            --collect-submodules PyQt6 --collect-data PyQt6 `
+            --collect-data matplotlib `
+            --collect-all pandas `
+            --collect-all numpy `
             --hidden-import PyQt6.QtCore --hidden-import PyQt6.QtGui --hidden-import PyQt6.QtWidgets `
             --hidden-import matplotlib.backends.backend_qtagg `
             --add-data "Csv;Csv" --add-data "Lexicons;Lexicons" --add-data "Urls;Urls" --add-data "DataAnalytics;DataAnalytics"
