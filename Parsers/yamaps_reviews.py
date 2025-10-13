@@ -19,6 +19,13 @@ from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.common.action_chains import ActionChains
 from selenium.common.exceptions import NoSuchWindowException, WebDriverException, TimeoutException
 
+import os, sys, platform
+from pathlib import Path
+from selenium import webdriver
+from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.chrome.service import Service
+from typing import Optional
+
 # ===== вход =====
 YAMAPS_URLS_FILE = "./Urls/yamaps_urls.txt"  # по одной ссылке на строку
 FALLBACK_URL = ("https://yandex.ru/maps/org/avtolotsman/1694054504/reviews/"
@@ -26,7 +33,6 @@ FALLBACK_URL = ("https://yandex.ru/maps/org/avtolotsman/1694054504/reviews/"
                 "&sspn=0.086370%2C0.033325&tab=reviews&text=автолоцман&z=14")
 
 # === УКАЖИ ПУТИ К БРАУЗЕРУ И ДРАЙВЕРУ ===
-YANDEX_BROWSER_BINARY = "/Applications/Yandex.app/Contents/MacOS/Yandex"  # поменять для windows
 YANDEXDRIVER_PATH     = "drivers/Windows/yandexdriver.exe"                             # поменять для windows
 
 # === КУДА ПИСАТЬ CSV ===
@@ -47,6 +53,30 @@ MONTHS_RU = {
 RELATIVE_MAP = {"сегодня": 0, "вчера": -1}
 
 PLATFORM = "Yandex Maps"
+
+# ---- где лежит браузер Яндекс ----
+def find_yandex_browser() -> Optional[Path]:
+    # 1) ручное переопределение
+    env = os.environ.get("YANDEX_BROWSER_PATH")
+    if env and Path(env).is_file():
+        return Path(env)
+
+    if platform.system() == "Windows":
+        candidates = [
+            Path(os.environ.get("LOCALAPPDATA", "")) / "Yandex" / "YandexBrowser" / "Application" / "browser.exe",
+            Path(os.environ.get("ProgramFiles", "")) / "Yandex" / "YandexBrowser" / "Application" / "browser.exe",
+            Path(os.environ.get("ProgramFiles(x86)", "")) / "Yandex" / "YandexBrowser" / "Application" / "browser.exe",
+        ]
+        for p in candidates:
+            if p.is_file():
+                return p
+        return None
+    else:
+        p = Path("/Applications/Yandex.app/Contents/MacOS/Yandex")
+        return p if p.is_file() else None
+
+# ---- инициализация Selenium ----
+yb = find_yandex_browser()
 
 # --------------------- Утилиты для summary ---------------------
 
@@ -225,7 +255,7 @@ def parse_ru_date_to_iso(s: str):
 
 def build_options() -> Options:
     opts = Options()
-    opts.binary_location = YANDEX_BROWSER_BINARY
+    opts.binary_location = str(yb)
     opts.add_argument("--start-maximized")
     opts.add_argument("--no-sandbox")
     opts.add_argument("--disable-dev-shm-usage")

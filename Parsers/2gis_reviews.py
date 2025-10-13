@@ -22,6 +22,12 @@ from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import NoSuchWindowException, WebDriverException, TimeoutException
 from selenium.webdriver.common.action_chains import ActionChains
 
+import os, sys, platform
+from pathlib import Path
+from selenium import webdriver
+from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.chrome.service import Service
+
 # для колёсика (Selenium 4, если доступно)
 try:
     from selenium.webdriver.common.actions.wheel_input import ScrollOrigin
@@ -34,7 +40,6 @@ FALLBACK_URL = ("https://2gis.ru/penza/search/%D0%B0%D0%B2%D1%82%D0%BE%D0%BB%D0%
                 "firm/70000001057701394/44.973806%2C53.220685/tab/reviews?m=44.975027%2C53.220456%2F17.63")
 
 # ===== ЯНДЕКС-БРАУЗЕР (macOS) =====
-YANDEX_BROWSER_BINARY = "/Applications/Yandex.app/Contents/MacOS/Yandex"
 YANDEXDRIVER_PATH     = "drivers/Windows/yandexdriver.exe"
 PROFILE_DIR           = str(Path.home() / ".yandex-2gis-scraper")
 
@@ -67,6 +72,32 @@ SCROLL_CONTAINER_SEL = "div._1rkbbi0x[data-scroll='true']"
 SUM_RATING_SEL        = "div._1tam240"            # пример: 3.7
 SUM_RATINGS_COUNT_SEL = "div._1y88ofn"            # пример: "4 оценки"
 SUM_REVIEWS_COUNT_SEL = "div._qvsf7z > span._1xhlznaa"  # строго по этому пути
+
+# ---- где лежит браузер Яндекс ----
+def find_yandex_browser() -> Optional[Path]:
+    # 1) ручное переопределение
+    env = os.environ.get("YANDEX_BROWSER_PATH")
+    if env and Path(env).is_file():
+        return Path(env)
+
+    if platform.system() == "Windows":
+        candidates = [
+            Path(os.environ.get("LOCALAPPDATA", "")) / "Yandex" / "YandexBrowser" / "Application" / "browser.exe",
+            Path(os.environ.get("ProgramFiles", "")) / "Yandex" / "YandexBrowser" / "Application" / "browser.exe",
+            Path(os.environ.get("ProgramFiles(x86)", "")) / "Yandex" / "YandexBrowser" / "Application" / "browser.exe",
+        ]
+        for p in candidates:
+            if p.is_file():
+                return p
+        return None
+    else:
+        p = Path("/Applications/Yandex.app/Contents/MacOS/Yandex")
+        return p if p.is_file() else None
+
+    return None  # Linux и др. — допиши при необходимости
+
+# ---- инициализация Selenium ----
+yb = find_yandex_browser()
 
 # ===== СООТВЕТСТВИЕ URL (firm id) → НУЖНЫЙ СЛАГ ОРГАНИЗАЦИИ =====
 ORGANIZATION_MAP_FIRMID: Dict[str, str] = {
@@ -154,7 +185,7 @@ def parse_ru_date_to_iso(s: Optional[str]) -> Optional[str]:
 
 def build_options() -> Options:
     opts = Options()
-    opts.binary_location = YANDEX_BROWSER_BINARY
+    opts.binary_location = str(yb)
     opts.add_argument("--start-maximized")
     opts.add_argument("--no-sandbox")
     opts.add_argument("--disable-dev-shm-usage")
@@ -167,8 +198,8 @@ def build_options() -> Options:
     return opts
 
 def setup_driver() -> webdriver.Chrome:
-    if not Path(YANDEX_BROWSER_BINARY).exists():
-        raise FileNotFoundError(f"Нет Yandex Browser: {YANDEX_BROWSER_BINARY}")
+    if not Path(str(yb)).exists():
+        raise FileNotFoundError(f"Нет Yandex Browser: {str(yb)}")
     if not Path(YANDEXDRIVER_PATH).is_file():
         raise FileNotFoundError(f"Нет yandexdriver: {YANDEXDRIVER_PATH}")
     service = Service(executable_path=YANDEXDRIVER_PATH)

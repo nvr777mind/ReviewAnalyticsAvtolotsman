@@ -21,9 +21,14 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import NoSuchWindowException, WebDriverException
 
+import os, sys, platform
+from pathlib import Path
+from selenium import webdriver
+from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.chrome.service import Service
+
 # ====== НАСТРОЙКИ ======
 DRIVER_PATH    = "drivers/Windows/yandexdriver.exe"  # для Windows укажи свой путь
-YANDEX_BINARY  = "/Applications/Yandex.app/Contents/MacOS/Yandex"
 URLS_FILE      = "Urls/gmaps_urls.txt"
 
 OUT_CSV_REV    = "Csv/Reviews/gmaps_reviews.csv"   # детальные отзывы: только с текстом и за последние 2 года
@@ -69,6 +74,32 @@ EXPAND_BTN_CSS = "button.w8nwRe.kyuRq"
 # summary
 RATING_BIG_CSS  = "div.fontDisplayLarge"         # например: 4,4
 COUNT_SMALL_CSS = "div.fontBodySmall"            # например: Отзывов: 522 / Reviews: 522
+
+# ---- где лежит браузер Яндекс ----
+def find_yandex_browser() -> Optional[Path]:
+    # 1) ручное переопределение
+    env = os.environ.get("YANDEX_BROWSER_PATH")
+    if env and Path(env).is_file():
+        return Path(env)
+
+    if platform.system() == "Windows":
+        candidates = [
+            Path(os.environ.get("LOCALAPPDATA", "")) / "Yandex" / "YandexBrowser" / "Application" / "browser.exe",
+            Path(os.environ.get("ProgramFiles", "")) / "Yandex" / "YandexBrowser" / "Application" / "browser.exe",
+            Path(os.environ.get("ProgramFiles(x86)", "")) / "Yandex" / "YandexBrowser" / "Application" / "browser.exe",
+        ]
+        for p in candidates:
+            if p.is_file():
+                return p
+        return None
+    else:
+        p = Path("/Applications/Yandex.app/Contents/MacOS/Yandex")
+        return p if p.is_file() else None
+
+    return None  # Linux и др. — допиши при необходимости
+
+# ---- инициализация Selenium ----
+yb = find_yandex_browser()
 
 # ====== ДАТЫ ======
 def _last_day_of_month(year: int, month: int) -> int:
@@ -657,7 +688,7 @@ def collect_all(drv, container, cutoff_date: date, w_rev, org: str) -> Tuple[int
 # ====== MAIN ======
 def main():
     opts = Options()
-    opts.binary_location = YANDEX_BINARY
+    opts.binary_location = str(yb)
     opts.add_argument("--disable-blink-features=AutomationControlled")
     opts.add_argument("--start-maximized")
     opts.add_argument("--disable-gpu")

@@ -30,6 +30,12 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import NoSuchWindowException, WebDriverException, TimeoutException
 
+import os, sys, platform
+from pathlib import Path
+from selenium import webdriver
+from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.chrome.service import Service
+
 # ===== ПУТИ =====
 DGIS_URLS_FILE       = "./Urls/2gis_urls.txt"
 FALLBACK_URL         = ("https://2gis.ru/penza/search/%D0%B0%D0%B2%D1%82%D0%BE%D0%BB%D0%BE%D1%86%D0%BC%D0%B0%D0%BD/"
@@ -42,6 +48,31 @@ OUT_CSV_REV_DELTA    = "Csv/Reviews/NewReviews/2gis_new_since.csv"
 OUT_CSV_SUMMARY_NEW  = "Csv/Summary/NewSummary/2gis_summary_new.csv"
 
 PLATFORM             = "2GIS"
+
+# ---- где лежит браузер Яндекс ----
+def find_yandex_browser() -> Optional[Path]:
+    # 1) ручное переопределение
+    env = os.environ.get("YANDEX_BROWSER_PATH")
+    if env and Path(env).is_file():
+        return Path(env)
+
+    if platform.system() == "Windows":
+        candidates = [
+            Path(os.environ.get("LOCALAPPDATA", "")) / "Yandex" / "YandexBrowser" / "Application" / "browser.exe",
+            Path(os.environ.get("ProgramFiles", "")) / "Yandex" / "YandexBrowser" / "Application" / "browser.exe",
+            Path(os.environ.get("ProgramFiles(x86)", "")) / "Yandex" / "YandexBrowser" / "Application" / "browser.exe",
+        ]
+        for p in candidates:
+            if p.is_file():
+                return p
+        return None
+
+    else:
+        p = Path("/Applications/Yandex.app/Contents/MacOS/Yandex")
+        return p if p.is_file() else None
+
+# ---- инициализация Selenium ----
+yb = find_yandex_browser()
 
 # ===== ПРОФИЛИ СКОРОСТИ =====
 # safe – ближе к исходному поведению; fast – ощутимо быстрее; ultra – максимально агрессивно
@@ -72,7 +103,6 @@ ENFORCE_DATE_CUTOFF = False
 YEARS_LIMIT_HINT    = 2
 
 # ===== БРАУЗЕР (Yandex) =====
-YANDEX_BROWSER_BINARY = "/Applications/Yandex.app/Contents/MacOS/Yandex"
 YANDEXDRIVER_PATH     = "drivers/Windows/yandexdriver.exe"
 PROFILE_DIR           = str(Path.home() / ".yandex-2gis-scraper")
 
@@ -195,7 +225,7 @@ def block_heavy_assets(driver):
 # ===== БРАУЗЕР =====
 def build_options() -> Options:
     opts = Options()
-    opts.binary_location = YANDEX_BROWSER_BINARY
+    opts.binary_location = str(yb)
     # Визуальный рендер не нужен для скорости
     if HEADLESS:
         # у Яндекс-браузера (Chromium base) обычно работает new headless
@@ -226,8 +256,8 @@ def build_options() -> Options:
     return opts
 
 def setup_driver() -> webdriver.Chrome:
-    if not Path(YANDEX_BROWSER_BINARY).exists():
-        raise FileNotFoundError(f"Нет Yandex Browser: {YANDEX_BROWSER_BINARY}")
+    if not Path(str(yb)).exists():
+        raise FileNotFoundError(f"Нет Yandex Browser: {str(yb)}")
     if not Path(YANDEXDRIVER_PATH).is_file():
         raise FileNotFoundError(f"Нет yandexdriver: {YANDEXDRIVER_PATH}")
     service = Service(executable_path=YANDEXDRIVER_PATH)

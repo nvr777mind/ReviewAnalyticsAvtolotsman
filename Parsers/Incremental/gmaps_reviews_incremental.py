@@ -36,9 +36,14 @@ from selenium.webdriver.common.action_chains import ActionChains
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 
+import os, sys, platform
+from pathlib import Path
+from selenium import webdriver
+from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.chrome.service import Service
+
 # ====== НАСТРОЙКИ ======
 DRIVER_PATH    = "drivers/Windows/yandexdriver.exe"  # при необходимости поменяй под свою ОС
-YANDEX_BINARY  = "/Applications/Yandex.app/Contents/MacOS/Yandex"
 URLS_FILE      = "Urls/gmaps_urls.txt"
 
 ALL_REVIEWS_CSV      = "Csv/Reviews/all_reviews.csv"
@@ -51,6 +56,32 @@ SHORT_WAIT     = 2
 SCROLL_PAUSE   = 0.6
 SCROLL_HARD_LIMIT = 600  # страховка от бесконечного скролла
 PLATFORM       = "Google Maps"
+
+# ---- где лежит браузер Яндекс ----
+def find_yandex_browser() -> Optional[Path]:
+    # 1) ручное переопределение
+    env = os.environ.get("YANDEX_BROWSER_PATH")
+    if env and Path(env).is_file():
+        return Path(env)
+
+    if platform.system() == "Windows":
+        candidates = [
+            Path(os.environ.get("LOCALAPPDATA", "")) / "Yandex" / "YandexBrowser" / "Application" / "browser.exe",
+            Path(os.environ.get("ProgramFiles", "")) / "Yandex" / "YandexBrowser" / "Application" / "browser.exe",
+            Path(os.environ.get("ProgramFiles(x86)", "")) / "Yandex" / "YandexBrowser" / "Application" / "browser.exe",
+        ]
+        for p in candidates:
+            if p.is_file():
+                return p
+        return None
+    
+    else:
+        p = Path("/Applications/Yandex.app/Contents/MacOS/Yandex")
+        return p if p.is_file() else None
+    
+
+# ---- инициализация Selenium ----
+yb = find_yandex_browser()
 
 # ЕДИНАЯ ОРГАНИЗАЦИЯ ДЛЯ GOOGLE MAPS
 def normalize_org(name: str) -> str:
@@ -674,7 +705,7 @@ def main():
 
     # браузер
     opts = Options()
-    opts.binary_location = YANDEX_BINARY
+    opts.binary_location = str(yb)
     opts.add_argument("--disable-blink-features=AutomationControlled")
     opts.add_argument("--start-maximized")
     opts.add_argument("--disable-gpu")
