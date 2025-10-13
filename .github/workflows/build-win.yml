@@ -16,7 +16,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.9.6'   # при необходимости поменяй
+          python-version: '3.9.6'
 
       - name: Cache pip
         uses: actions/cache@v4
@@ -29,49 +29,30 @@ jobs:
         shell: powershell
         run: |
           python -m pip install --upgrade pip setuptools wheel
-          if (Test-Path requirements.txt) {
-            pip install -r requirements.txt
-          }
+          if (Test-Path requirements.txt) { pip install -r requirements.txt }
           pip install pyinstaller pyqt6 matplotlib pywin32-ctypes packaging
 
       # ========== 1) GUI ==========
       - name: Build GUI (ReviewAnalytics.exe)
         shell: powershell
         run: |
-          $extra = @()
-
-          # Кладём ТОЛЬКО Windows-драйверы из Drivers\Windows -> в папку drivers рядом с exe
-          if (Test-Path "Drivers\Windows") {
-            $extra += '--add-data "Drivers\Windows;drivers"'
-            if (Get-ChildItem "Drivers\Windows" -Filter "*.exe" -ErrorAction SilentlyContinue) {
-              $extra += '--add-binary "Drivers\Windows\*.exe;drivers"'
-            }
-            if (Get-ChildItem "Drivers\Windows" -Filter "*.dll" -ErrorAction SilentlyContinue) {
-              $extra += '--add-binary "Drivers\Windows\*.dll;drivers"'
-            }
-          }
-
-          $cmd = @(
-            'pyinstaller Interface/interface.py',
-            '--noconfirm',
-            '--onefile',
-            '--windowed',
-            '--name ReviewAnalytics',
-            '--collect-submodules PyQt6',
-            '--collect-data PyQt6',
-            '--collect-data matplotlib',
-            '--hidden-import PyQt6.QtCore',
-            '--hidden-import PyQt6.QtGui',
-            '--hidden-import PyQt6.QtWidgets',
-            '--hidden-import matplotlib.backends.backend_qtagg',
-            '--add-data "Csv;Csv"',
-            '--add-data "Lexicons;Lexicons"',
-            '--add-data "Urls;Urls"',
-            '--add-data "DataAnalytics;DataAnalytics"'
-          ) + $extra
-
-          Write-Host "Running:" ($cmd -join ' ')
-          Invoke-Expression ($cmd -join ' ')
+          pyinstaller Interface/interface.py `
+            --noconfirm `
+            --onefile `
+            --windowed `
+            --name ReviewAnalytics `
+            --collect-submodules PyQt6 `
+            --collect-data PyQt6 `
+            --collect-data matplotlib `
+            --hidden-import PyQt6.QtCore `
+            --hidden-import PyQt6.QtGui `
+            --hidden-import PyQt6.QtWidgets `
+            --hidden-import matplotlib.backends.backend_qtagg `
+            --add-data "Csv;Csv" `
+            --add-data "Lexicons;Lexicons" `
+            --add-data "Urls;Urls" `
+            --add-data "DataAnalytics;DataAnalytics"
+          # драйвер НЕ вшиваем — положим рядом после сборки
 
       # ========== 2) Основные парсеры ==========
       - name: Build parsers (.exe)
@@ -81,7 +62,7 @@ jobs:
           if (Test-Path "Parsers\yamaps_reviews.py") { pyinstaller Parsers/yamaps_reviews.py --noconfirm --onefile --name yamaps_reviews }
           if (Test-Path "Parsers\2gis_reviews.py")   { pyinstaller Parsers/2gis_reviews.py   --noconfirm --onefile --name 2gis_reviews }
 
-      # ========== 3) Merge/Analytics (вызываются через QProcess) ==========
+      # ========== 3) Merge/Analytics ==========
       - name: Build merge & analytics (.exe)
         shell: powershell
         run: |
@@ -91,7 +72,7 @@ jobs:
           if (Test-Path "Csv\Reviews\NewReviews\merged_new_reviews.py") { pyinstaller Csv/Reviews/NewReviews/merged_new_reviews.py --noconfirm --onefile --name merged_new_reviews }
           if (Test-Path "Csv\Summary\NewSummary\merged_new_summary.py") { pyinstaller Csv/Summary/NewSummary/merged_new_summary.py --noconfirm --onefile --name merged_new_summary }
 
-      # ========== 4) Инкрементальные парсеры (динамически, префикс incr_) ==========
+      # ========== 4) Инкрементальные парсеры ==========
       - name: Build incremental parsers (incr_*.exe)
         shell: powershell
         run: |
@@ -104,7 +85,20 @@ jobs:
             }
           }
 
-      # ========== 5) Публикация ==========
+      # ========== 5) Положим Windows-драйвер в dist/drivers/Windows ==========
+      - name: Copy Windows driver into dist/drivers/Windows
+        shell: powershell
+        run: |
+          if (Test-Path "Drivers\Windows") {
+            New-Item -ItemType Directory -Force -Path dist\drivers\Windows | Out-Null
+            Copy-Item "Drivers\Windows\*" "dist\drivers\Windows\" -Recurse -Force
+            Write-Host "Drivers copied to dist\drivers\Windows"
+            Get-ChildItem dist\drivers\Windows
+          } else {
+            Write-Host "Drivers\Windows not found, skipping driver copy."
+          }
+
+      # ========== 6) Публикация ==========
       - name: Upload artifacts (bundle)
         uses: actions/upload-artifact@v4
         with:
@@ -120,3 +114,4 @@ jobs:
             dist/merged_new_reviews.exe
             dist/merged_new_summary.exe
             dist/incr_*.exe
+            dist/drivers/**
