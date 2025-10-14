@@ -27,7 +27,7 @@ jobs:
         run: |
           python -m pip install --upgrade pip setuptools wheel
           if (Test-Path requirements.txt) { pip install -r requirements.txt }
-          # Явно ставим большие пакеты, чтобы точно были в окружении сборки
+          # Гарантируем наличие крупных пакетов в окружении сборки
           pip install pandas numpy pyinstaller pyqt6 matplotlib pywin32-ctypes packaging
           echo "---- pip freeze ----"
           pip freeze
@@ -60,9 +60,9 @@ jobs:
         shell: powershell
         run: |
           New-Item -ItemType Directory -Force -Path dist\Csv\Reviews, dist\Csv\Summary, dist\DataAnalytics, dist\Csv\Reviews\NewReviews, dist\Csv\Summary\NewSummary | Out-Null
-          if (Test-Path "Csv\Reviews\merged_reviews.py")                { pyinstaller Csv/Reviews/merged_reviews.py                --noconfirm --onefile --name merged_reviews      ; Move-Item dist\merged_reviews.exe      dist\Csv\Reviews\merged_reviews.exe           -Force }
-          if (Test-Path "DataAnalytics\add_sentiment.py")               { pyinstaller DataAnalytics/add_sentiment.py               --noconfirm --onefile --name add_sentiment       ; Move-Item dist\add_sentiment.exe       dist\DataAnalytics\add_sentiment.exe          -Force }
-          if (Test-Path "Csv\Summary\merged_summary.py")                { pyinstaller Csv/Summary/merged_summary.py                --noconfirm --onefile --name merged_summary      ; Move-Item dist\merged_summary.exe      dist\Csv\Summary\merged_summary.exe          -Force }
+          if (Test-Path "Csv\Reviews\merged_reviews.py")                { pyinstaller Csv/Reviews/merged_reviews.py                --noconfirm --onefile --name merged_reviews      ; Move-Item dist\merged_reviews.exe      dist\Csv\Reviews\merged_reviews.exe                 -Force }
+          if (Test-Path "DataAnalytics\add_sentiment.py")               { pyinstaller DataAnalytics/add_sentiment.py               --noconfirm --onefile --name add_sentiment       ; Move-Item dist\add_sentiment.exe       dist\DataAnalytics\add_sentiment.exe                -Force }
+          if (Test-Path "Csv\Summary\merged_summary.py")                { pyinstaller Csv/Summary/merged_summary.py                --noconfirm --onefile --name merged_summary      ; Move-Item dist\merged_summary.exe      dist\Csv\Summary\merged_summary.exe                -Force }
           if (Test-Path "Csv\Reviews\NewReviews\merged_new_reviews.py") { pyinstaller Csv/Reviews/NewReviews/merged_new_reviews.py --noconfirm --onefile --name merged_new_reviews  ; Move-Item dist\merged_new_reviews.exe  dist\Csv\Reviews\NewReviews\merged_new_reviews.exe -Force }
           if (Test-Path "Csv\Summary\NewSummary\merged_new_summary.py") { pyinstaller Csv/Summary/NewSummary/merged_new_summary.py --noconfirm --onefile --name merged_new_summary  ; Move-Item dist\merged_new_summary.exe  dist\Csv\Summary\NewSummary\merged_new_summary.exe -Force }
 
@@ -89,6 +89,21 @@ jobs:
             New-Item -ItemType Directory -Force -Path dist\drivers\Windows | Out-Null
             Copy-Item "Drivers\Windows\*" "dist\drivers\Windows\" -Recurse -Force
             Get-ChildItem dist\drivers\Windows
+          }
+
+      # 5b) Данные для парсеров: копируем Urls и Lexicons в dist/, чтобы их видели .exe
+      - name: Copy data folders (Urls, Lexicons) into dist
+        shell: powershell
+        run: |
+          if (Test-Path "Urls") {
+            New-Item -ItemType Directory -Force -Path dist\Urls | Out-Null
+            Copy-Item "Urls\*" "dist\Urls\" -Recurse -Force
+            Write-Host "Copied Urls -> dist\Urls"
+          }
+          if (Test-Path "Lexicons") {
+            New-Item -ItemType Directory -Force -Path dist\Lexicons | Out-Null
+            Copy-Item "Lexicons\*" "dist\Lexicons\" -Recurse -Force
+            Write-Host "Copied Lexicons -> dist\Lexicons"
           }
 
       # 6) Публикация
