@@ -23,15 +23,24 @@ jobs:
           key: ${{ runner.os }}-py311-pip-${{ hashFiles('**/requirements.txt') }}
           restore-keys: ${{ runner.os }}-py311-pip-
 
-      - name: Install deps (pin PyQt6/Qt6)
+      - name: Install deps (pin PyQt6/Qt6 6.5.x LTS)
         run: |
           python -m pip install --upgrade pip setuptools wheel
           if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
-          # Пины, которые хорошо работают на macOS ARM
+          # Пины, проверенные на macOS ARM
           pip install "pyinstaller>=6.6,<7" \
-                      "PyQt6==6.7.1" "PyQt6-Qt6==6.7.2" "PyQt6-sip>=13" \
+                      "PyQt6==6.5.3" "PyQt6-Qt6==6.5.3" "PyQt6-sip>=13" \
                       pandas numpy matplotlib packaging
           pip freeze
+
+      - name: Create runtime hook (Qt safe layer)
+        run: |
+          mkdir -p hooks
+          cat > hooks/qt_macos_layer.py << 'PY'
+          import os
+          # Устраняет падения рендера на части конфигураций macOS/ARM
+          os.environ.setdefault("QT_MAC_WANTS_LAYER", "1")
+          PY
 
       - name: Build GUI (.app, clean)
         run: |
@@ -48,12 +57,14 @@ jobs:
             --hidden-import PyQt6.QtWidgets \
             --hidden-import matplotlib.backends.backend_qtagg \
             --exclude-module PyQt6.QtBluetooth \
+            --runtime-hook hooks/qt_macos_layer.py \
             --add-data "Csv:Csv" \
             --add-data "Lexicons:Lexicons" \
             --add-data "Urls:Urls" \
             --add-data "DataAnalytics:DataAnalytics" \
             Interface/interface.py
           file "dist/ReviewAnalytics.app/Contents/MacOS/ReviewAnalytics"
+          uname -m
 
       - name: Prepare bundle tree (parsers/data/drivers)
         run: |
@@ -72,7 +83,7 @@ jobs:
             cp -R Drivers/MacOS/* "$OUT/drivers/MacOS/"
             chmod +x "$OUT"/drivers/MacOS/* || true
           fi
-          # Снимем карантин в артефакте (полезно при локальном запуске)
+          # Снимем карантин в артефакте (удобно для локального запуска)
           xattr -dr com.apple.quarantine dist/ReviewAnalytics.app || true
 
       - name: Ad-hoc codesign (optional)
