@@ -34,17 +34,19 @@ jobs:
       - name: Build GUI (.app)
         run: |
           pyinstaller Interface/interface.py \
-            --noconfirm --windowed --onedir --name ReviewAnalytics \
-            --collect-submodules PyQt6 --collect-data PyQt6 \
-            --collect-data matplotlib \
+            --noconfirm --clean --windowed --onedir --name ReviewAnalytics \
+            --collect-submodules PyQt6 \
             --collect-all pandas \
             --collect-all numpy \
+            --collect-data matplotlib \
             --hidden-import PyQt6.QtCore --hidden-import PyQt6.QtGui --hidden-import PyQt6.QtWidgets \
             --hidden-import matplotlib.backends.backend_qtagg \
+            --exclude-module PyQt6.QtBluetooth \  # <-- можно убрать, если нужен Bluetooth
             --add-data "Csv:Csv" \
             --add-data "Lexicons:Lexicons" \
             --add-data "Urls:Urls" \
             --add-data "DataAnalytics:DataAnalytics"
+
 
       # Если хочешь бинарники парсеров под macOS — собери их так же и разложи.
       # Ниже просто готовим структуру и копируем исходники/данные,
