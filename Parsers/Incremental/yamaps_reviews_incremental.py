@@ -46,7 +46,7 @@ IN_ALL_REVIEWS_CSV   = "Csv/Reviews/all_reviews.csv"   # общий пул ва�
 YAMAPS_URLS_FILE     = "Urls/yamaps_urls.txt"          # по одной ссылке на строку
 
 # Браузер/драйвер (под macOS; поменяйте при необходимости под Windows/Linux)
-YANDEXDRIVER_PATH     = "drivers/Windows/yandexdriver.exe"
+YANDEXDRIVER_PATH     = "Drivers/MacOS/yandexdriver"
 
 # ---- где лежит браузер Яндекс ----
 def find_yandex_browser() -> Optional[Path]:

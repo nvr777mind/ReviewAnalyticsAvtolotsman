@@ -33,7 +33,7 @@ FALLBACK_URL = ("https://yandex.ru/maps/org/avtolotsman/1694054504/reviews/"
                 "&sspn=0.086370%2C0.033325&tab=reviews&text=автолоцман&z=14")
 
 # === УКАЖИ ПУТИ К БРАУЗЕРУ И ДРАЙВЕРУ ===
-YANDEXDRIVER_PATH     = "drivers/Windows/yandexdriver.exe"                             # поменять для windows
+YANDEXDRIVER_PATH     = "Drivers/MacOS/yandexdriver"                             # поменять для windows
 
 # === КУДА ПИСАТЬ CSV ===
 OUT_CSV_REVIEWS  = "Csv/Reviews/yamaps_reviews.csv"

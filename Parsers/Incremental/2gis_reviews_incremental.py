@@ -106,7 +106,7 @@ ENFORCE_DATE_CUTOFF = False
 YEARS_LIMIT_HINT    = 2
 
 # ===== БРАУЗЕР (Yandex) =====
-YANDEXDRIVER_PATH     = "drivers/Windows/yandexdriver.exe"
+YANDEXDRIVER_PATH     = "Drivers/MacOS/yandexdriver"
 PROFILE_DIR           = str(Path.home() / ".yandex-2gis-scraper")
 
 # ===== 2ГИС СЕЛЕКТОРЫ =====
