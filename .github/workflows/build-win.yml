@@ -6,32 +6,34 @@ on:
     branches: [ main ]
 
 jobs:
-  build:
-    # поменяй на macos-13 (Intel) или macos-14 (Apple Silicon)
-    runs-on: macos-14
+  build-arm64:
+    runs-on: macos-14   # Apple Silicon runner
 
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-python@v5
         with:
-          python-version: '3.9'   # можно и 3.9, но на mac проще свежий
+          python-version: '3.11'   # стабильнее для PyQt6/arm64
 
       - name: Cache pip
         uses: actions/cache@v4
         with:
           path: ~/Library/Caches/pip
-          key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
-          restore-keys: ${{ runner.os }}-pip-
+          key: ${{ runner.os }}-py311-pip-${{ hashFiles('**/requirements.txt') }}
+          restore-keys: ${{ runner.os }}-py311-pip-
 
-      - name: Install deps
+      - name: Install deps (pin PyQt6/Qt6)
         run: |
           python -m pip install --upgrade pip setuptools wheel
           if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
-          pip install pyinstaller pandas numpy pyqt6 matplotlib packaging
+          # Пины, которые хорошо работают на macOS ARM
+          pip install "pyinstaller>=6.6,<7" \
+                      "PyQt6==6.7.1" "PyQt6-Qt6==6.7.2" "PyQt6-sip>=13" \
+                      pandas numpy matplotlib packaging
           pip freeze
 
-      - name: Build GUI (.app)
+      - name: Build GUI (.app, clean)
         run: |
           set -e
           pyinstaller \
@@ -51,63 +53,36 @@ jobs:
             --add-data "Urls:Urls" \
             --add-data "DataAnalytics:DataAnalytics" \
             Interface/interface.py
+          file "dist/ReviewAnalytics.app/Contents/MacOS/ReviewAnalytics"
 
-
-      # Если хочешь бинарники парсеров под macOS — собери их так же и разложи.
-      # Ниже просто готовим структуру и копируем исходники/данные,
-      # т.к. твой GUI запускает .py в dev-режиме. Если ты внедрил _script_cmd(),
-      # он будет искать .py на mac и .exe на windows.
-      - name: Prepare tree (Parsers, Csv, DataAnalytics, Drivers, data)
+      - name: Prepare bundle tree (parsers/data/drivers)
         run: |
-          APPROOT="dist/ReviewAnalytics.app"
-          OUTDIR="dist/ReviewAnalytics-bundle"
-
-          # Корневая папка рядом с .app для всего остального
-          mkdir -p "$OUTDIR/Parsers/Incremental" "$OUTDIR/Csv/Reviews/NewReviews" "$OUTDIR/Csv/Summary/NewSummary" "$OUTDIR/DataAnalytics" "$OUTDIR/Drivers/MacOS"
-          cp -R Parsers/*.py "$OUTDIR/Parsers/" 2>/dev/null || true
-          cp -R Parsers/Incremental/*.py "$OUTDIR/Parsers/Incremental/" 2>/dev/null || true
-          cp -R Csv/Reviews/merged_reviews.py "$OUTDIR/Csv/Reviews/" 2>/dev/null || true
-          cp -R Csv/Reviews/NewReviews/merged_new_reviews.py "$OUTDIR/Csv/Reviews/NewReviews/" 2>/dev/null || true
-          cp -R Csv/Summary/merged_summary.py "$OUTDIR/Csv/Summary/" 2>/dev/null || true
-          cp -R Csv/Summary/NewSummary/merged_new_summary.py "$OUTDIR/Csv/Summary/NewSummary/" 2>/dev/null || true
-          cp -R DataAnalytics/add_sentiment.py "$OUTDIR/DataAnalytics/" 2>/dev/null || true
-
-          # данные
-          [ -d Urls ] && cp -R Urls "$OUTDIR/Urls"
-          [ -d Lexicons ] && cp -R Lexicons "$OUTDIR/Lexicons"
-
-          # драйверы macOS
+          OUT="dist/ReviewAnalytics-bundle-arm64"
+          mkdir -p "$OUT/Parsers/Incremental" "$OUT/Csv/Reviews/NewReviews" "$OUT/Csv/Summary/NewSummary" "$OUT/DataAnalytics" "$OUT/drivers/MacOS"
+          cp -R Parsers/*.py "$OUT/Parsers/" 2>/dev/null || true
+          cp -R Parsers/Incremental/*.py "$OUT/Parsers/Incremental/" 2>/dev/null || true
+          cp -R Csv/Reviews/merged_reviews.py "$OUT/Csv/Reviews/" 2>/dev/null || true
+          cp -R Csv/Reviews/NewReviews/merged_new_reviews.py "$OUT/Csv/Reviews/NewReviews/" 2>/dev/null || true
+          cp -R Csv/Summary/merged_summary.py "$OUT/Csv/Summary/" 2>/dev/null || true
+          cp -R Csv/Summary/NewSummary/merged_new_summary.py "$OUT/Csv/Summary/NewSummary/" 2>/dev/null || true
+          cp -R DataAnalytics/add_sentiment.py "$OUT/DataAnalytics/" 2>/dev/null || true
+          [ -d Urls ] && cp -R Urls "$OUT/Urls"
+          [ -d Lexicons ] && cp -R Lexicons "$OUT/Lexicons"
           if [ -d Drivers/MacOS ]; then
-            cp -R Drivers/MacOS/* "$OUTDIR/Drivers/MacOS/"
-            chmod +x "$OUTDIR"/Drivers/MacOS/* || true
+            cp -R Drivers/MacOS/* "$OUT/drivers/MacOS/"
+            chmod +x "$OUT"/drivers/MacOS/* || true
           fi
+          # Снимем карантин в артефакте (полезно при локальном запуске)
+          xattr -dr com.apple.quarantine dist/ReviewAnalytics.app || true
 
-          # Для удобства пакуем всё: .app + дерево рядом
-          mkdir -p dist/release
-          tar -czf dist/release/ReviewAnalytics_mac_bundle.tgz -C dist ReviewAnalytics.app ReviewAnalytics-bundle
-
-      # (опционально) Ад-хок подпись, чтобы меньше ругался Gatekeeper
       - name: Ad-hoc codesign (optional)
         run: |
           codesign --force --deep --sign - "dist/ReviewAnalytics.app" || true
 
-      # (опционально) .DMG
-      - name: Create DMG
-        run: |
-          brew install create-dmg
-          mkdir -p dist/release
-          create-dmg \
-            --volname "ReviewAnalytics" \
-            --app-drop-link 600 185 \
-            dist/release/ReviewAnalytics.dmg \
-            dist/ReviewAnalytics.app
-
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: ReviewAnalytics-macOS
+          name: ReviewAnalytics-macOS-arm64
           path: |
             dist/ReviewAnalytics.app
-            dist/release/ReviewAnalytics.dmg
-            dist/release/ReviewAnalytics_mac_bundle.tgz
-            dist/ReviewAnalytics-bundle/**
+            dist/ReviewAnalytics-bundle-arm64/**
