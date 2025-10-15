@@ -28,7 +28,7 @@ from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.chrome.service import Service
 
 # ====== НАСТРОЙКИ ======
-DRIVER_PATH    = "Drivers/MacOS/yandexdriver"  # для Windows укажи свой путь
+DRIVER_PATH    = "Drivers/Windows/yandexdriver.exe"  # для Windows укажи свой путь
 URLS_FILE      = "Urls/gmaps_urls.txt"
 
 OUT_CSV_REV    = "Csv/Reviews/gmaps_reviews.csv"   # детальные отзывы: только с текстом и за последние 2 года

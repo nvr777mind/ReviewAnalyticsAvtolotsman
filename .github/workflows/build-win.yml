@@ -26,11 +26,15 @@ jobs:
       - name: Install deps (pin PyQt6/Qt6 6.5.x LTS)
         run: |
           python -m pip install --upgrade pip setuptools wheel
-          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
-          # Пины, проверенные на macOS ARM
-          pip install "pyinstaller>=6.6,<7" \
-                      "PyQt6==6.5.3" "PyQt6-Qt6==6.5.3" "PyQt6-sip>=13" \
-                      pandas numpy matplotlib packaging
+          
+          pip install PyQt6 pandas numpy matplotlib python-dateutil
+          pip install selenium urllib3 requests beautifulsoup4 lxml
+          pip install plyer pyobjus
+          # опционально:
+          pip install webdriver-manager tqdm python-dotenv
+          # для сборки приложений:
+          pip install pyinstaller
+
           pip freeze
 
       - name: Create runtime hook (Qt safe layer)
