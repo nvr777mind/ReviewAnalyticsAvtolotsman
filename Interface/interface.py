@@ -484,7 +484,7 @@ class MainWindow(QMainWindow):
 
         # сводка (белым)
         self._stats_label = QLabel("Отфильтровано: — | Средний рейтинг: —")
-        self._stats_label.setStyleSheet("color: #ffffff; padding: 2px 0;")
+        self._stats_label.setStyleSheet("padding: 2px 0;")
 
         # ==== CSV-переключатель ====
         self._csv_mode = "reviews"  # "reviews" | "summary"
