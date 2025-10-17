@@ -1,9 +1,3 @@
-# -*- coding: utf-8 -*-
-"""
-2ГИС → CSV: rating,author,date_iso,text,platform,organization
-Запуск: Яндекс.Браузер + yandexdriver (macOS). Python 3.9.
-"""
-
 import csv, re, time
 from typing import Optional, Tuple, List, Set, Dict
 from datetime import datetime, timedelta
@@ -28,27 +22,25 @@ from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.chrome.service import Service
 
-# для колёсика (Selenium 4, если доступно)
 try:
     from selenium.webdriver.common.actions.wheel_input import ScrollOrigin
 except Exception:
     ScrollOrigin = None
 
-# ===== ВХОД =====
 DGIS_URLS_FILE = "./Urls/2gis_urls.txt"
 FALLBACK_URL = ("https://2gis.ru/penza/search/%D0%B0%D0%B2%D1%82%D0%BE%D0%BB%D0%BE%D1%86%D0%BC%D0%B0%D0%BD/"
                 "firm/70000001057701394/44.973806%2C53.220685/tab/reviews?m=44.975027%2C53.220456%2F17.63")
 
-# ===== ЯНДЕКС-БРАУЗЕР (macOS) =====
-YANDEXDRIVER_PATH     = "Drivers/Windows/yandexdriver.exe"
+if platform.system() == "Windows":
+    YANDEXDRIVER_PATH = "Drivers/Windows/yandexdriver.exe"
+else:
+    YANDEXDRIVER_PATH = "Drivers/MacOS/yandexdriver"
+    
 PROFILE_DIR           = str(Path.home() / ".yandex-2gis-scraper")
 
-# ===== ВЫХОД =====
 OUT_CSV = "Csv/Reviews/2gis_reviews.csv"
-# >>> ДОБАВЛЕНО: summary по каждой ссылке
 OUT_CSV_SUMMARY = "Csv/Summary/2gis_summary.csv"
 
-# ===== ПАРАМЕТРЫ =====
 WAIT_TIMEOUT        = 8
 BURSTS              = 12
 BURST_MS            = 520
@@ -56,26 +48,20 @@ IDLE_LIMIT          = 1
 YEARS_LIMIT         = 2
 ENFORCE_DATE_CUTOFF = False
 
-# ===== 2ГИС СЕЛЕКТОРЫ =====
 AUTHOR_SEL       = "span._wrdavn > span._16s5yj36"
 DATE_SEL         = "div._m80g57y > div._a5f6uz"
 RATING_FILL_SEL  = "div._1m0m6z5 > div._1fkin5c"
 
-# Текст: сначала неразвёрнутый, если его нет — развёрнутый
-TEXT_BLOCK_SEL   = "div._49x36f > a._1wlx08h"   # НЕразвёрнутый текст
-ALT_TEXT_SEL     = "div._49x36f > a._1msln3t"   # Развёрнутый текст (fallback)
+TEXT_BLOCK_SEL   = "div._49x36f > a._1wlx08h"
+ALT_TEXT_SEL     = "div._49x36f > a._1msln3t"
 
-# ЯВНЫЙ СКРОЛЛ-КОНТЕЙНЕР
 SCROLL_CONTAINER_SEL = "div._1rkbbi0x[data-scroll='true']"
 
-# >>> ДОБАВЛЕНО: селекторы summary
-SUM_RATING_SEL        = "div._1tam240"            # пример: 3.7
-SUM_RATINGS_COUNT_SEL = "div._1y88ofn"            # пример: "4 оценки"
-SUM_REVIEWS_COUNT_SEL = "div._qvsf7z > span._1xhlznaa"  # строго по этому пути
+SUM_RATING_SEL        = "div._1tam240"
+SUM_RATINGS_COUNT_SEL = "div._1y88ofn"
+SUM_REVIEWS_COUNT_SEL = "div._qvsf7z > span._1xhlznaa"
 
-# ---- где лежит браузер Яндекс ----
 def find_yandex_browser() -> Optional[Path]:
-    # 1) ручное переопределение
     env = os.environ.get("YANDEX_BROWSER_PATH")
     if env and Path(env).is_file():
         return Path(env)
@@ -97,12 +83,10 @@ def find_yandex_browser() -> Optional[Path]:
         p = Path("/Applications/Yandex.app/Contents/MacOS/Yandex")
         return p if p.is_file() else None
 
-    return None  # Linux и др. — допиши при необходимости
+    return None
 
-# ---- инициализация Selenium ----
 yb = find_yandex_browser()
 
-# ===== СООТВЕТСТВИЕ URL (firm id) → НУЖНЫЙ СЛАГ ОРГАНИЗАЦИИ =====
 ORGANIZATION_MAP_FIRMID: Dict[str, str] = {
     "70000001057701394": "avtolotsman_probeg",
     "70000001086881480": "avtolotsman",
@@ -136,12 +120,10 @@ def parse_ru_date_to_iso(s: Optional[str]) -> Optional[str]:
     s = re.sub(r"редакт.*$", "", s).strip()
     s = re.split(r"[,\u2022•]", s)[0].strip()
 
-    # сегодня/вчера
     if s in RELATIVE_MAP:
         d = datetime.now().date() + timedelta(days=RELATIVE_MAP[s])
         return d.isoformat()
 
-    # "X ... назад"
     mrel = re.match(r"^(\d{1,2})\s+([а-яё]+)\s+назад$", s, flags=re.I)
     if mrel:
         qty = int(mrel.group(1))
@@ -161,7 +143,6 @@ def parse_ru_date_to_iso(s: Optional[str]) -> Optional[str]:
             d = datetime.now().date() - timedelta(days=qty * step)
             return d.isoformat()
 
-    # "24 июля 2025" или "24 июля"
     m = re.match(r"^(\d{1,2})\s+([а-яё]+)(?:\s+(\d{4}))?(?:\s*г\.?)?$", s, flags=re.I)
     if m:
         day = int(m.group(1))
@@ -173,7 +154,6 @@ def parse_ru_date_to_iso(s: Optional[str]) -> Optional[str]:
             except:
                 return None
 
-    # "24.07.2025" или "24.07.25"
     m2 = re.match(r"^(\d{1,2})\.(\d{1,2})\.(\d{2,4})$", s)
     if m2:
         d, mo, y = int(m2.group(1)), int(m2.group(2)), int(m2.group(3))
@@ -299,7 +279,6 @@ def wait_for_reviews_content(driver):
             return False
     WebDriverWait(driver, WAIT_TIMEOUT).until(_present)
 
-# ====== СКРОЛЛЕР ======
 def _is_visible(driver, el) -> bool:
     try:
         rect = driver.execute_script("const r=arguments[0].getBoundingClientRect();return [r.width,r.height];", el)
@@ -308,7 +287,6 @@ def _is_visible(driver, el) -> bool:
         return False
 
 def get_scroll_container(driver):
-    # 1) Жёстко целимся в div._1rkbbi0x[data-scroll='true']
     try:
         cand = driver.find_elements(By.CSS_SELECTOR, SCROLL_CONTAINER_SEL)
         cand = [c for c in cand if _is_visible(driver, c)]
@@ -332,7 +310,6 @@ def get_scroll_container(driver):
     except:
         pass
 
-    # 2) Фолбэк: эвристика
     try:
         container = driver.execute_script("""
             function isScrollable(el){
@@ -392,8 +369,8 @@ def autoscroll_burst(driver, container, ms: int):
                 container
             )
             step = max(200, int(ch * step_ratio))
-            _ = _wheel_scroll_once(driver, container, step)  # wheel
-            driver.execute_script(  # js
+            _ = _wheel_scroll_once(driver, container, step)
+            driver.execute_script(
                 "arguments[0].scrollTop = Math.min(arguments[0].scrollTop + arguments[1], arguments[0].scrollHeight);",
                 container, step
             )
@@ -426,7 +403,6 @@ def get_scroll_height(driver, container) -> int:
             return int(driver.execute_script("return (document.scrollingElement||document.body).scrollHeight;") or 0)
         except:
             return 0
-# ====== /СКРОЛЛЕР ======
 
 def _rating_from_spans_count(card) -> Optional[float]:
     try:
@@ -460,7 +436,6 @@ def normalize_review_text(s: str) -> str:
     return s.strip()
 
 def _get_text_by_selectors(card) -> str:
-    # primary
     try:
         el = card.find_element(By.CSS_SELECTOR, TEXT_BLOCK_SEL)
         t = (el.text or "").strip()
@@ -468,7 +443,6 @@ def _get_text_by_selectors(card) -> str:
             return t
     except:
         pass
-    # fallback
     try:
         el = card.find_element(By.CSS_SELECTOR, ALT_TEXT_SEL)
         t = (el.text or "").strip()
@@ -501,13 +475,11 @@ def extract_review_from_card(card, driver) -> dict:
 
     date_raw, date_iso = "", ""
     try:
-        # Берём дату из шапки карточки, не из "официального ответа"
         date_els = card.find_elements(
             By.XPATH,
             ".//div[contains(@class,'_m80g57y')]//div[contains(@class,'_a5f6uz')][not(ancestor::*[contains(@class,'_sgs1pz')])]"
         )
         if not date_els:
-            # страховка — старый селектор, если разметка поменялась
             date_els = card.find_elements(By.CSS_SELECTOR, DATE_SEL)
 
         if date_els:
@@ -537,7 +509,6 @@ def extract_review_from_card(card, driver) -> dict:
     }
 
 def extract_organization(driver) -> str:
-    # Фолбэк: попытка вытащить имя со страницы
     try:
         driver.switch_to.default_content()
     except:
@@ -567,7 +538,6 @@ def extract_organization(driver) -> str:
         return ""
 
 def find_review_cards(driver):
-    # Каждый отзыв — это div._1k5soqfl
     try:
         return driver.find_elements(By.CSS_SELECTOR, "div._1k5soqfl")
     except:
@@ -621,7 +591,6 @@ def collect_visible_batch(driver, seen_unused: set, out: list, cutoff_date, dedu
             continue
     return added, met_old
 
-# >>> ДОБАВЛЕНО: сбор summary (rating_avg, ratings_count, reviews_count)
 def _textnum_to_int(s: Optional[str]) -> Optional[int]:
     if not s: return None
     t = s.replace("\xa0", " ")
@@ -658,7 +627,6 @@ def extract_summary_2gis(driver) -> Tuple[Optional[float], Optional[int], Option
 
     rating_avg = ratings_count = reviews_count = None
 
-    # рейтинг
     try:
         el = driver.find_elements(By.CSS_SELECTOR, SUM_RATING_SEL)
         if el:
@@ -666,7 +634,6 @@ def extract_summary_2gis(driver) -> Tuple[Optional[float], Optional[int], Option
     except:
         pass
 
-    # всего оценок
     try:
         els = driver.find_elements(By.CSS_SELECTOR, SUM_RATINGS_COUNT_SEL)
         for e in els:
@@ -677,7 +644,6 @@ def extract_summary_2gis(driver) -> Tuple[Optional[float], Optional[int], Option
     except:
         pass
 
-    # всего отзывов — строго по пути div._qvsf7z > span._1xhlznaa
     try:
         el = driver.find_elements(By.CSS_SELECTOR, SUM_REVIEWS_COUNT_SEL)
         if el:
@@ -685,7 +651,6 @@ def extract_summary_2gis(driver) -> Tuple[Optional[float], Optional[int], Option
     except:
         pass
 
-    # Fallback через HTML с жёстким путём (если вдруг не нашлось визуально)
     if reviews_count is None:
         try:
             html = driver.page_source
@@ -710,7 +675,6 @@ def process_one_url(url: str, forced_org: Optional[str] = None, summary_writer: 
         inject_perf_css(driver)
         time.sleep(3)
 
-        # Организация
         org = forced_org or org_from_url(url) or ""
         if not org:
             try:
@@ -718,7 +682,6 @@ def process_one_url(url: str, forced_org: Optional[str] = None, summary_writer: 
             except:
                 org = ""
 
-        # >>> ДОБАВЛЕНО: summary до переключений во фреймы/табы
         try:
             rating_avg, ratings_count, reviews_count = extract_summary_2gis(driver)
             if summary_writer is not None:
@@ -801,16 +764,15 @@ def main():
 
     all_rows: List[Dict] = []
 
-    # >>> ДОБАВЛЕНО: подготовка summary CSV
     Path(OUT_CSV_SUMMARY).parent.mkdir(parents=True, exist_ok=True)
     f_sum = open(OUT_CSV_SUMMARY, "w", newline="", encoding="utf-8")
     w_sum = csv.DictWriter(f_sum, fieldnames=["organization","platform","rating_avg","ratings_count","reviews_count"], quoting=csv.QUOTE_ALL)
     w_sum.writeheader()
 
     for i, url in enumerate(urls, 1):
-        org_slug = org_from_url(url) or ""  # берём из карты по firm id
+        org_slug = org_from_url(url) or ""
         print(f"[{i}/{len(urls)}] {url}  -> org='{org_slug or '-'}'")
-        reviews = process_one_url(url, forced_org=org_slug, summary_writer=w_sum)  # <<< передаём writer
+        reviews = process_one_url(url, forced_org=org_slug, summary_writer=w_sum)
         all_rows.extend(reviews)
 
     try:

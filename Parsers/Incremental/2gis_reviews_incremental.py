@@ -1,18 +1,3 @@
-# -*- coding: utf-8 -*-
-"""
-Инкрементальный сбор отзывов с 2ГИС (ускорённая версия).
-
-Главные изменения скорости:
-- Блокируем тяжёлые ресурсы (картинки/шрифты/видео/тайлы) через CDP.
-- Меньше ожиданий: короче таймауты, бурсты короче, ранняя остановка.
-- Между бурстами не спим фиксированно, а ждём коротко появления новых карточек
-  или роста scrollHeight.
-
-Переключатели скорости:
-    SPEED_PROFILE: "safe" | "fast" | "ultra"
-    HEADLESS: False/True (True быстрее, но может хуже проходить защиту)
-"""
-
 import csv, re, time, unicodedata
 from typing import Optional, Tuple, List, Dict
 from datetime import datetime, timedelta, date
@@ -36,22 +21,19 @@ from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.chrome.service import Service
 
-# ===== ПУТИ =====
 DGIS_URLS_FILE       = "./Urls/2gis_urls.txt"
 FALLBACK_URL         = ("https://2gis.ru/penza/search/%D0%B0%D0%B2%D1%82%D0%BE%D0%BB%D0%BE%D1%86%D0%BC%D0%B0%D0%BD/"
                         "firm/70000001057701394/44.973806%2C53.220685/tab/reviews?m=44.975027%2C53.220456%2F17.63")
 
-ALL_REVIEWS_CSV      = "Csv/Reviews/all_reviews.csv"      # используем только для пороговой даты
-SUMMARY_BASE_CSV     = "Csv/Summary/2gis_summary.csv"     # для инкремента reviews_count
+ALL_REVIEWS_CSV      = "Csv/Reviews/all_reviews.csv"
+SUMMARY_BASE_CSV     = "Csv/Summary/2gis_summary.csv"
 
 OUT_CSV_REV_DELTA    = "Csv/Reviews/NewReviews/2gis_new_since.csv"
 OUT_CSV_SUMMARY_NEW  = "Csv/Summary/NewSummary/2gis_summary_new.csv"
 
 PLATFORM             = "2GIS"
 
-# ---- где лежит браузер Яндекс ----
 def find_yandex_browser() -> Optional[Path]:
-    # 1) ручное переопределение
     env = os.environ.get("YANDEX_BROWSER_PATH")
     if env and Path(env).is_file():
         return Path(env)
@@ -74,13 +56,10 @@ def find_yandex_browser() -> Optional[Path]:
         p = Path("/Applications/Yandex.app/Contents/MacOS/Yandex")
         return p if p.is_file() else None
 
-# ---- инициализация Selenium ----
 yb = find_yandex_browser()
 
-# ===== ПРОФИЛИ СКОРОСТИ =====
-# safe – ближе к исходному поведению; fast – ощутимо быстрее; ultra – максимально агрессивно
-SPEED_PROFILE = "fast"   # "safe" | "fast" | "ultra"
-HEADLESS      = False    # Можно True для максимальной скорости (может хуже проходить защиту)
+SPEED_PROFILE = "fast"
+HEADLESS      = False
 
 if SPEED_PROFILE == "safe":
     WAIT_TIMEOUT   = 15
@@ -94,35 +73,34 @@ elif SPEED_PROFILE == "ultra":
     BURST_MS       = 520
     IDLE_LIMIT     = 1
     BETWEEN_BURSTS_SOFT_WAIT = 0.25
-else:  # fast (по умолчанию)
+else:
     WAIT_TIMEOUT   = 10
     BURSTS         = 18
     BURST_MS       = 700
     IDLE_LIMIT     = 2
     BETWEEN_BURSTS_SOFT_WAIT = 0.4
 
-# Остальные параметры
 ENFORCE_DATE_CUTOFF = False
 YEARS_LIMIT_HINT    = 2
 
-# ===== БРАУЗЕР (Yandex) =====
-YANDEXDRIVER_PATH     = "Drivers/Windows/yandexdriver.exe"
+if platform.system() == "Windows":
+    YANDEXDRIVER_PATH = "Drivers/Windows/yandexdriver.exe"
+else:
+    YANDEXDRIVER_PATH = "Drivers/MacOS/yandexdriver"
+
 PROFILE_DIR           = str(Path.home() / ".yandex-2gis-scraper")
 
-# ===== 2ГИС СЕЛЕКТОРЫ =====
 AUTHOR_SEL       = "span._wrdavn > span._16s5yj36"
 DATE_SEL         = "div._m80g57y > div._a5f6uz"
 RATING_FILL_SEL  = "div._1m0m6z5 > div._1fkin5c"
-TEXT_BLOCK_SEL   = "div._49x36f > a._1wlx08h"     # НЕразвёрнутый текст
-ALT_TEXT_SEL     = "div._49x36f > a._1msln3t"     # Развёрнутый текст (fallback)
+TEXT_BLOCK_SEL   = "div._49x36f > a._1wlx08h"
+ALT_TEXT_SEL     = "div._49x36f > a._1msln3t"
 SCROLL_CONTAINER_SEL = "div._1rkbbi0x[data-scroll='true']"
 
-# summary
-SUM_RATING_SEL        = "div._1tam240"                  # 3.7
-SUM_RATINGS_COUNT_SEL = "div._1y88ofn"                  # "4 оценки"
-SUM_REVIEWS_COUNT_SEL = "div._qvsf7z > span._1xhlznaa"  # строго
+SUM_RATING_SEL        = "div._1tam240"
+SUM_RATINGS_COUNT_SEL = "div._1y88ofn"
+SUM_REVIEWS_COUNT_SEL = "div._qvsf7z > span._1xhlznaa"
 
-# ===== МАППИНГ firm id → slug =====
 ORGANIZATION_MAP_FIRMID: Dict[str, str] = {
     "70000001057701394": "avtolotsman_probeg",
     "70000001086881480": "avtolotsman",
@@ -139,7 +117,6 @@ MONTHS_RU = {"января":1,"февраля":2,"марта":3,"апреля":4
              "июля":7,"августа":8,"сентября":9,"октября":10,"ноября":11,"декабря":12}
 RELATIVE_MAP = {"сегодня": 0, "вчера": -1}
 
-# ===== НОРМАЛИЗАЦИИ/КЛЮЧИ =====
 def norm_text(s: str) -> str:
     if not s: return ""
     x = unicodedata.normalize("NFKC", s).lower()
@@ -157,7 +134,6 @@ def norm_author(s: str) -> str:
 def text_signature(s: str, length: int = 180) -> str:
     return norm_text(s)[:length]
 
-# ===== ДАТЫ =====
 def parse_ru_date_to_iso(s: Optional[str]) -> Optional[str]:
     if not s: return None
     s = s.strip().lower()
@@ -201,7 +177,6 @@ def parse_ru_date_to_iso(s: Optional[str]) -> Optional[str]:
 
     return None
 
-# ===== УСКОРИТЕЛИ (CSS/ресурсы) =====
 def inject_perf_css(driver):
     try:
         driver.execute_script("""
@@ -225,34 +200,27 @@ def block_heavy_assets(driver):
     except Exception:
         pass
 
-# ===== БРАУЗЕР =====
 def build_options() -> Options:
     opts = Options()
     opts.binary_location = str(yb)
-    # Визуальный рендер не нужен для скорости
     if HEADLESS:
-        # у Яндекс-браузера (Chromium base) обычно работает new headless
         opts.add_argument("--headless=new")
     opts.add_argument("--start-maximized")
     opts.add_argument("--no-sandbox")
     opts.add_argument("--disable-dev-shm-usage")
     opts.add_argument("--lang=ru-RU,ru")
-    # подгружаем только нужное – страницы сами ждём целевые элементы
+
     opts.page_load_strategy = "eager"
-    # профиль — чтобы не логиниться каждый раз (но без лишнего кэша)
+
     opts.add_argument(f"--user-data-dir={PROFILE_DIR}")
     opts.add_argument("--profile-directory=Default")
     opts.add_experimental_option("excludeSwitches", ["enable-automation"])
     opts.add_experimental_option("useAutomationExtension", False)
 
-    # Отключаем картинки (двойным способом — на случай, если один не подействует)
     opts.add_argument("--blink-settings=imagesEnabled=false")
     prefs = {
         "profile.managed_default_content_settings.images": 2,
-        # Видеоконтент
         "profile.managed_default_content_settings.media_stream": 2,
-        # Шрифты могут подтормаживать, но иногда влияют на вёрстку — лучше не трогать.
-        # "profile.managed_default_content_settings.fonts": 2,
     }
     opts.add_experimental_option("prefs", prefs)
 
@@ -272,7 +240,7 @@ def setup_driver() -> webdriver.Chrome:
         })
     except:
         pass
-    # Ускорители
+
     block_heavy_assets(drv)
     return drv
 
@@ -317,7 +285,7 @@ def switch_to_reviews_iframe(driver) -> bool:
         for frame in iframes:
             try:
                 driver.switch_to.frame(frame); time.sleep(0.15)
-                # простая эвристика "внутри есть контент"
+
                 if len([el for el in driver.find_elements(By.CSS_SELECTOR, "div, span, p") if len((el.text or '').strip()) > 50]) > 0:
                     return True
                 driver.switch_to.default_content()
@@ -334,7 +302,6 @@ def wait_for_reviews_content(driver):
         except: return False
     WebDriverWait(driver, WAIT_TIMEOUT).until(_present)
 
-# ===== СКРОЛЛ =====
 def _is_visible(driver, el) -> bool:
     try:
         w,h = driver.execute_script("const r=arguments[0].getBoundingClientRect();return [r.width,r.height];", el)
@@ -375,9 +342,8 @@ def autoscroll_burst(driver, container, ms: int):
             )
         except:
             driver.execute_script("window.scrollBy(0, Math.floor(window.innerHeight*0.9));")
-        time.sleep(0.12)  # было 0.25
+        time.sleep(0.12)
 
-# ===== ПАРСИНГ КАРТОЧКИ =====
 def _rating_from_spans_count(card) -> Optional[float]:
     try:
         for fill in card.find_elements(By.CSS_SELECTOR, RATING_FILL_SEL):
@@ -494,7 +460,6 @@ def find_review_cards(driver):
     try: return driver.find_elements(By.CSS_SELECTOR, "div._1k5soqfl")
     except: return []
 
-# ===== CSV/ALL_REVIEWS: только пороговые даты =====
 def _try_parse_date(s: Optional[str]) -> Optional[date]:
     if not s: return None
     s = s.strip()[:10]
@@ -562,7 +527,6 @@ def load_prev_reviews_count(summary_csv: str, platform: str) -> Dict[str, int]:
                 continue
     return res
 
-# ===== Сбор партии (локальный дедуп) =====
 def collect_visible_batch(driver, cutoff_date: date,
                           dedupe_index: Dict[Tuple[str,str], int],
                           out: List[Dict]) -> Tuple[int, bool]:
@@ -608,7 +572,6 @@ def collect_visible_batch(driver, cutoff_date: date,
 def _nz(v, zero=0):
     return v if v not in (None, "") else zero
 
-# ===== ВСПОМОГАТЕЛЬНОЕ ОЖИДАНИЕ ПОСЛЕ БУРСТА =====
 def soft_wait_for_growth(driver, container, prev_h: int, prev_cards: int, timeout: float) -> Tuple[int, int]:
     """Ждём коротко прироста высоты или появления новых карточек (вместо жесткого sleep)."""
     end = time.time() + timeout
@@ -628,7 +591,6 @@ def soft_wait_for_growth(driver, container, prev_h: int, prev_cards: int, timeou
         time.sleep(0.05)
     return last_h, last_cards
 
-# ===== ОСНОВНОЙ ПРОЦЕСС ОДНОГО URL =====
 def process_one_url(url: str,
                     forced_org: Optional[str],
                     cutoff_date: date) -> Tuple[str, List[Dict], Tuple[Optional[float], Optional[int], Optional[int]]]:
@@ -641,10 +603,9 @@ def process_one_url(url: str,
         if not ensure_window(driver):
             driver.quit(); return "", [], (None, None, None)
 
-        inject_perf_css(driver)  # сразу убираем анимации
+        inject_perf_css(driver)
         org = forced_org or extract_organization_from_url(url) or ""
 
-        # summary (до фреймов/таба)
         try:
             rating_avg, ratings_count, reviews_count = extract_summary_2gis(driver)
         except Exception:
@@ -666,7 +627,6 @@ def process_one_url(url: str,
         idle = 0
         stop_by_age = False
 
-        # стартовая партия
         added, met_old = collect_visible_batch(driver, cutoff_date, dedupe_index, results)
         if met_old: stop_by_age = True
 
@@ -677,7 +637,6 @@ def process_one_url(url: str,
             prev_cards = len(find_review_cards(driver))
 
             autoscroll_burst(driver, container, BURST_MS)
-            # вместо sleep(1.0) — ждём коротко рост/новые карточки
             new_h, new_cards = soft_wait_for_growth(driver, container, prev_h, prev_cards, BETWEEN_BURSTS_SOFT_WAIT)
 
             added, met_old = collect_visible_batch(driver, cutoff_date, dedupe_index, results)
@@ -700,23 +659,18 @@ def process_one_url(url: str,
         try: driver.quit()
         except: pass
 
-# ===== MAIN =====
 def main():
-    # URL’ы
     try:
         urls = [u.strip() for u in Path(DGIS_URLS_FILE).read_text(encoding="utf-8").splitlines() if u.strip()]
         if not urls: urls = [FALLBACK_URL]
     except FileNotFoundError:
         urls = [FALLBACK_URL]
 
-    # Пороговые даты из all_reviews (только для остановки по дате)
     latest_by_org = load_latest_dates_by_org(ALL_REVIEWS_CSV, PLATFORM)
     print(f"[INFO] Пороговые даты: {len(latest_by_org)} орг. | speed={SPEED_PROFILE} | headless={HEADLESS}")
 
-    # Старый summary (для инкремента reviews_count)
     prev_counts = load_prev_reviews_count(SUMMARY_BASE_CSV, PLATFORM)
 
-    # Выходные CSV
     Path(OUT_CSV_SUMMARY_NEW).parent.mkdir(parents=True, exist_ok=True)
     Path(OUT_CSV_REV_DELTA).parent.mkdir(parents=True, exist_ok=True)
 
@@ -739,7 +693,6 @@ def main():
                 url, forced_org=org_slug, cutoff_date=cutoff
             )
 
-            # Запись дельты отзывов
             written = 0
             for r in reviews:
                 w_rev.writerow({
@@ -755,7 +708,6 @@ def main():
             total_written_by_org[ok] = total_written_by_org.get(ok, 0) + written
             print(f"  новых записано: {written}")
 
-            # Агрегируем summary по организации
             if ok not in summary_by_org:
                 summary_by_org[ok] = {
                     "organization": org or org_slug or "",
@@ -768,7 +720,6 @@ def main():
         try: f_rev.flush(); f_rev.close()
         except: pass
 
-    # Пишем ИТОГОВЫЙ summary (по одной строке на org) с инкрементом счётчика
     with open(OUT_CSV_SUMMARY_NEW, "w", newline="", encoding="utf-8") as fsum2:
         w2 = csv.DictWriter(fsum2, fieldnames=["organization","platform","rating_avg","ratings_count","reviews_count"], quoting=csv.QUOTE_ALL)
         w2.writeheader()

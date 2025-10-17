@@ -1,19 +1,3 @@
-# -*- coding: utf-8 -*-
-"""
-Инкрементальный сбор отзывов с Google Maps:
-- Пороговая дата берётся из Csv/Reviews/all_reviews.csv (по платформе 'Google Maps' и организации 'avtolotsman').
-- По каждой ссылке из Urls/gmaps_urls.txt:
-    * открываем страницу (hl=ru), кликаем «Все отзывы», включаем «Сначала новые»,
-    * собираем summary (rating_avg, ratings_count),
-    * скроллим и пишем ТОЛЬКО отзывы СТРОГО НОВЕЕ пороговой даты,
-    * как только встретился отзыв с датой <= пороговой — останавливаемся.
-- Перед записью каждого найденного «нового» отзыва проверяем, есть ли он уже в all_reviews (по author+text_signature).
-- Новые отзывы → Csv/Reviews/NewReviews/gmaps_new_since.csv (rating,author,date_iso,text,platform,organization).
-- Новый summary → Csv/Summary/NewSummary/gmaps_summary_new.csv (organization,platform,rating_avg,ratings_count,reviews_count),
-  где reviews_count = (старое значение из Csv/Summary/gmaps_summary.csv) + (сколько новых добавили).
-Совместим с Python 3.9.
-"""
-
 import re
 import time
 import csv
@@ -42,24 +26,26 @@ from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.chrome.service import Service
 
-# ====== НАСТРОЙКИ ======
-DRIVER_PATH    = "Drivers/Windows/yandexdriver.exe"  # при необходимости поменяй под свою ОС
+if platform.system() == "Windows":
+    DRIVER_PATH = "Drivers/Windows/yandexdriver.exe"
+else:
+    DRIVER_PATH = "Drivers/MacOS/yandexdriver"
+
 URLS_FILE      = "Urls/gmaps_urls.txt"
 
 ALL_REVIEWS_CSV      = "Csv/Reviews/all_reviews.csv"
-SUMMARY_BASE_CSV     = "Csv/Summary/gmaps_summary.csv"          # ← отсюда берём «старое» reviews_count
+SUMMARY_BASE_CSV     = "Csv/Summary/gmaps_summary.csv"
 OUT_CSV_REV_DELTA    = "Csv/Reviews/NewReviews/gmaps_new_since.csv"
 OUT_CSV_SUMMARY_NEW  = "Csv/Summary/NewSummary/gmaps_summary_new.csv"
 
 FIRST_WAIT     = 12
 SHORT_WAIT     = 2
 SCROLL_PAUSE   = 0.6
-SCROLL_HARD_LIMIT = 600  # страховка от бесконечного скролла
+SCROLL_HARD_LIMIT = 600
 PLATFORM       = "Google Maps"
 
-# ---- где лежит браузер Яндекс ----
 def find_yandex_browser() -> Optional[Path]:
-    # 1) ручное переопределение
+
     env = os.environ.get("YANDEX_BROWSER_PATH")
     if env and Path(env).is_file():
         return Path(env)
@@ -83,10 +69,8 @@ def find_yandex_browser() -> Optional[Path]:
         return p if p.is_file() else None
     
 
-# ---- инициализация Selenium ----
 yb = find_yandex_browser()
 
-# ЕДИНАЯ ОРГАНИЗАЦИЯ ДЛЯ GOOGLE MAPS
 def normalize_org(name: str) -> str:
     if not name:
         return ""
@@ -96,10 +80,9 @@ def normalize_org(name: str) -> str:
     s = " ".join(s.split())
     return s
 
-ORG_LABEL = "avtolotsman"                 # так пишем в CSV
-ORG_KEY   = normalize_org(ORG_LABEL)      # так ищем в all_reviews/summary
+ORG_LABEL = "avtolotsman"
+ORG_KEY   = normalize_org(ORG_LABEL)
 
-# ====== СЕЛЕКТОРЫ ======
 REVIEWS_CONTAINER_CANDIDATES = [
     "div.m6QErb.DxyBCb",
     "div.m6QErb.XiKgde",
@@ -111,15 +94,13 @@ REVIEW_CARD_FALLBACK = "div.jftiEf"
 
 AUTHOR_CSS = ".d4r55.fontTitleMedium"
 RATING_CSS = ".kvMYJc"
-DATE_CSS   = ".rsqaWe"   # <span class="rsqaWe">месяц назад</span>
+DATE_CSS   = ".rsqaWe"
 TEXT_CSS   = ".wiI7pd"
 EXPAND_BTN_CSS = "button.w8nwRe.kyuRq"
 
-# summary
-RATING_BIG_CSS  = "div.fontDisplayLarge"   # 4,4
-COUNT_SMALL_CSS = "div.fontBodySmall"      # «Отзывов: 522» (используем как ratings_count, если попадётся)
+RATING_BIG_CSS  = "div.fontDisplayLarge"
+COUNT_SMALL_CSS = "div.fontBodySmall"
 
-# ====== ДАТЫ/Парсинг относительных дат (ru/en) ======
 def _last_day_of_month(year: int, month: int) -> int:
     return calendar.monthrange(year, month)[1]
 
@@ -232,13 +213,11 @@ def normalize_relative(text: Optional[str], now: Optional[datetime] = None) -> O
             pass
     return None
 
-# ====== УТИЛЫ (нормализация текста/автора и сигнатуры) ======
 def norm_text(s: str) -> str:
     if not s:
         return ""
     x = unicodedata.normalize("NFKC", s).lower()
     x = re.sub(r"\s+", " ", x).strip()
-    # уберём кавычки/скобки/пунктуацию, чтобы уменьшить риск «ложных неравенств» из-за мелочей
     x = re.sub(r"[«»\"'”“„‚…‐-–—\-–—·•/\\\(\)\[\]\{\},.;:!?]", "", x)
     x = re.sub(r"\s+", " ", x).strip()
     return x
@@ -255,7 +234,6 @@ def text_signature(s: str, length: int = 180) -> str:
     n = norm_text(s)
     return n[:length]
 
-# ====== УТИЛЫ ДЛЯ САЙТА ======
 def add_hl_ru(url: str) -> str:
     try:
         u = urlparse(url); q = parse_qs(u.query); q["hl"] = ["ru"]
@@ -306,7 +284,6 @@ def find_reviews_container(drv):
             continue
     return None
 
-# ====== SUMMARY ======
 def extract_summary_gmaps(drv) -> tuple:
     rating_avg = None
     try:
@@ -345,7 +322,7 @@ def extract_summary_gmaps(drv) -> tuple:
 
     return rating_avg, ratings_count
 
-# ====== Чтение старого reviews_count из базового summary ======
+
 def _int_from_any(x) -> Optional[int]:
     if x is None:
         return None
@@ -380,7 +357,7 @@ def load_prev_reviews_count(summary_csv: str, platform: str) -> Dict[str, int]:
                 continue
     return res
 
-# ====== Пороговые даты из all_reviews ======
+
 def _try_parse_date(s: Optional[str]) -> Optional[date]:
     if not s:
         return None
@@ -426,7 +403,7 @@ def load_latest_dates_by_org(all_reviews_csv: str, platform: str) -> Dict[str, d
                 continue
     return latest
 
-# ====== КЛЮЧ: загрузить множества ключей (author+text_signature) из all_reviews для дедупликации ======
+
 def load_existing_review_keys(all_reviews_csv: str, platform: str) -> Dict[str, Set[Tuple[str, str]]]:
     """
     Возвращает {normalized_org: set((author_norm, text_sig), ...)} из all_reviews.csv
@@ -454,7 +431,7 @@ def load_existing_review_keys(all_reviews_csv: str, platform: str) -> Dict[str, 
                 continue
     return res
 
-# ====== Сортировка «Сначала новые» ======
+
 def set_sort_newest(drv, attempts: int = 3) -> bool:
     def _open_menu():
         btn_xpaths = [
@@ -535,7 +512,7 @@ def set_sort_newest(drv, attempts: int = 3) -> bool:
             return True
     return False
 
-# ====== Извлечение карточки ======
+
 def extract_card_fields(c):
     for b in c.find_elements(By.CSS_SELECTOR, EXPAND_BTN_CSS):
         try:
@@ -580,7 +557,7 @@ def extract_card_fields(c):
 
     return {"rating": rating, "author": author, "date_text": date_text, "date_iso": date_iso, "text": text}
 
-# ====== Сбор «дельты» (с проверкой на наличие в all_reviews) ======
+
 def collect_delta_gmaps(
     drv,
     container,
@@ -595,7 +572,7 @@ def collect_delta_gmaps(
     Останавливается, как только встретит отзыв с датой <= threshold.
     Возвращает: сколько новых (записанных) отзывов.
     """
-    seen_recent_keys = set()               # защита от дублей в пределах одного запуска
+    seen_recent_keys = set()
     written = 0
 
     last_h = -1
@@ -606,7 +583,6 @@ def collect_delta_gmaps(
     while not stop and rounds < SCROLL_HARD_LIMIT:
         rounds += 1
 
-        # раскрыть «Ещё»
         for b in container.find_elements(By.CSS_SELECTOR, EXPAND_BTN_CSS):
             try:
                 if b.is_displayed() and b.is_enabled():
@@ -635,25 +611,20 @@ def collect_delta_gmaps(
             except Exception:
                 continue
 
-            # стоп по порогу — как только встретили не новее, останавливаемся
             if d <= threshold:
                 stop = True
                 break
 
-            # ключ "на экране" (для защиты от дублей здесь)
             key_recent = (item.get("author") or "", item.get("date_text") or "", txt[:120])
             if key_recent in seen_recent_keys:
                 continue
             seen_recent_keys.add(key_recent)
 
-            # === ДЕДУП против all_reviews ===
             a_norm = norm_author(item.get("author") or "")
             t_sig  = text_signature(txt)
             if (a_norm, t_sig) in existing_keys_for_org:
-                # уже есть в all_reviews → пропускаем
                 continue
 
-            # раз нет в all_reviews — пишем и добавляем в «известные»
             w_rev.writerow({
                 "rating":       item.get("rating"),
                 "author":       (item.get("author") or "").strip(),
@@ -664,10 +635,8 @@ def collect_delta_gmaps(
             })
             written += 1
 
-            # чтобы второй раз в этом же запуске точно не схватить
             existing_keys_for_org.add((a_norm, t_sig))
 
-        # скроллим
         try:
             h = drv.execute_script("return arguments[0].scrollHeight;", container)
             drv.execute_script("arguments[0].scrollTop = arguments[0].scrollHeight;", container)
@@ -687,26 +656,21 @@ def collect_delta_gmaps(
 
     return written
 
-# ====== MAIN ======
 def main():
-    # пороговые даты из all_reviews
     latest_by_org = load_latest_dates_by_org(ALL_REVIEWS_CSV, PLATFORM)
     if latest_by_org:
         print(f"[INFO] Найдены последние даты по {len(latest_by_org)} организациям в '{ALL_REVIEWS_CSV}'.")
     else:
         print(f"[INFO] '{ALL_REVIEWS_CSV}' не найден или пуст — будем собирать всё, что есть (порог = 1900-01-01).")
 
-    # ключи уже существующих отзывов (для дедупа) из all_reviews
     existing_keys = load_existing_review_keys(ALL_REVIEWS_CSV, PLATFORM)
     print(f"[INFO] Загружены ключи для дедупликации из '{ALL_REVIEWS_CSV}': "
           f"{sum(len(v) for v in existing_keys.values())} штук (по всем организациям).")
 
-    # старые значения reviews_count из summary
     prev_counts = load_prev_reviews_count(SUMMARY_BASE_CSV, PLATFORM)
     prev_count = prev_counts.get(ORG_KEY, 0)
     print(f"[INFO] Старый reviews_count из '{SUMMARY_BASE_CSV}' для '{ORG_LABEL}': {prev_count}")
 
-    # браузер
     opts = Options()
     opts.binary_location = str(yb)
     opts.add_argument("--disable-blink-features=AutomationControlled")
@@ -716,13 +680,11 @@ def main():
     opts.add_experimental_option("excludeSwitches", ["enable-automation"])
     drv = webdriver.Chrome(service=Service(DRIVER_PATH), options=opts)
 
-    # входные ссылки
     try:
         urls = [u.strip() for u in Path(URLS_FILE).read_text(encoding="utf-8").splitlines() if u.strip()]
     except FileNotFoundError:
         urls = []
 
-    # подготовка выходных CSV
     Path(OUT_CSV_REV_DELTA).parent.mkdir(parents=True, exist_ok=True)
     Path(OUT_CSV_SUMMARY_NEW).parent.mkdir(parents=True, exist_ok=True)
     f_rev = open(OUT_CSV_REV_DELTA, "w", newline="", encoding="utf-8")
@@ -744,19 +706,15 @@ def main():
             time.sleep(FIRST_WAIT if i == 1 else SHORT_WAIT)
             accept_cookies_if_any(drv)
 
-            # «Все отзывы»
             click_all_reviews(drv)
             time.sleep(1.0)
 
-            # Сначала новые
             set_sort_newest(drv)
             time.sleep(0.6)
 
-            # summary (без вычисления reviews_count по прокрутке)
             rating_avg, ratings_count = extract_summary_gmaps(drv)
             last_rating_avg, last_ratings_count = rating_avg, ratings_count
 
-            # контейнер отзывов
             container = find_reviews_container(drv)
             if not container:
                 click_all_reviews(drv)
@@ -765,22 +723,17 @@ def main():
                     print("  [WARN] не найден контейнер отзывов, пропускаю")
                     continue
 
-            # пороговая дата для фиксированной организации
             threshold = latest_by_org.get(ORG_KEY, date(1900, 1, 1))
             print(f"  Организация: {ORG_LABEL} | Пороговая дата (последняя в all_reviews): {threshold.isoformat()}")
 
-            # набор существующих ключей по организации для дедупа
             existing_keys_for_org = existing_keys.get(ORG_KEY, set())
 
-            # сбор «дельты» (строго новее threshold + проверка в all_reviews)
             written = collect_delta_gmaps(drv, container, threshold, w_rev, ORG_LABEL, existing_keys_for_org)
             total_written += written
             print(f"  новых отзывов записано (после дедупа): {written}")
 
-            # обновим общий словарь ключей (на случай нескольких URL на одну орг)
             existing_keys[ORG_KEY] = existing_keys_for_org
 
-        # === запись summary (одна строка на организацию) ===
         new_reviews_count = max(0, prev_count) + max(0, total_written)
         w_sum.writerow({
             "organization": ORG_LABEL,

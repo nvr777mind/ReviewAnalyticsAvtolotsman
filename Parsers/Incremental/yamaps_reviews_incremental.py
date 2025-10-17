@@ -1,18 +1,3 @@
-# -*- coding: utf-8 -*-
-
-"""
-Инкрементальный сбор отзывов с Яндекс.Карт:
-- Берём "пороговую" дату из Csv/Reviews/all_reviews.csv (по платформе 'Yandex Maps' и организации).
-- Для каждой ссылки из Urls/yamaps_urls.txt:
-    * открываем страницу,
-    * собираем summary (rating_avg, ratings_count, reviews_count),
-    * сортируем «По новизне»,
-    * скроллим и собираем отзывы СТРОГО НОВЕЕ пороговой даты,
-    * как только встретился отзыв с датой <= пороговой — останавливаемся.
-- Новые отзывы пишем в Csv/Reviews/yamaps_new_since.csv.
-- Новый summary пишем в Csv/Summary/yamaps_summary_new.csv.
-"""
-
 import csv
 import re
 from datetime import datetime, timedelta, date
@@ -40,17 +25,15 @@ from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.chrome.service import Service
 
-# ===================== НАСТРОЙКИ =====================
-# Вход
-IN_ALL_REVIEWS_CSV   = "Csv/Reviews/all_reviews.csv"   # общий пул ваших отзывов
-YAMAPS_URLS_FILE     = "Urls/yamaps_urls.txt"          # по одной ссылке на строку
+IN_ALL_REVIEWS_CSV   = "Csv/Reviews/all_reviews.csv"
+YAMAPS_URLS_FILE     = "Urls/yamaps_urls.txt"
 
-# Браузер/драйвер (под macOS; поменяйте при необходимости под Windows/Linux)
-YANDEXDRIVER_PATH     = "Drivers/Windows/yandexdriver.exe"
+if platform.system() == "Windows":
+    YANDEXDRIVER_PATH = "Drivers/Windows/yandexdriver.exe"
+else:
+    YANDEXDRIVER_PATH = "Drivers/MacOS/yandexdriver"
 
-# ---- где лежит браузер Яндекс ----
 def find_yandex_browser() -> Optional[Path]:
-    # 1) ручное переопределение
     env = os.environ.get("YANDEX_BROWSER_PATH")
     if env and Path(env).is_file():
         return Path(env)
@@ -73,19 +56,16 @@ def find_yandex_browser() -> Optional[Path]:
         p = Path("/Applications/Yandex.app/Contents/MacOS/Yandex")
         return p if p.is_file() else None
 
-# ---- инициализация Selenium ----
 yb = find_yandex_browser()
 
-# Выход
 OUT_CSV_DELTA         = "Csv/Reviews/NewReviews/yamaps_new_since.csv"
 OUT_CSV_SUMMARY_NEW   = "Csv/Summary/NewSummary/yamaps_summary_new.csv"
 
-# Параметры
 WAIT_TIMEOUT   = 60
-BURSTS         = 12       # число «рывков» автоскролла
-BURST_MS       = 1200     # длительность рывка, мс
-IDLE_LIMIT     = 3        # сколько раз подряд не прибавилось карточек — тогда выходим
-ONLY_WITH_TEXT = True     # собирать только отзывы с непустым текстом
+BURSTS         = 12
+BURST_MS       = 1200
+IDLE_LIMIT     = 3
+ONLY_WITH_TEXT = True
 PLATFORM       = "Yandex Maps"
 
 MONTHS_RU = {
@@ -93,10 +73,8 @@ MONTHS_RU = {
     "июля": 7, "августа": 8, "сентября": 9, "октября": 10, "ноября": 11, "декабря": 12,
 }
 RELATIVE_MAP = {"сегодня": 0, "вчера": -1}
-# =====================================================
 
 
-# --------------------- Вспомогательные парсеры ---------------------
 def parse_rating(aria_label: str):
     if not aria_label:
         return None
@@ -154,7 +132,6 @@ def extract_organization_from_url(url: str) -> str:
     return ""
 
 
-# --------------------- Работа с CSV (all_reviews.csv) ---------------------
 def _try_parse_date(s: Optional[str]) -> Optional[date]:
     if not s:
         return None
@@ -163,7 +140,6 @@ def _try_parse_date(s: Optional[str]) -> Optional[date]:
         return datetime.fromisoformat(s).date()
     except Exception:
         pass
-    # Попробуем dd.mm.yyyy
     m = re.match(r"^(\d{1,2})\.(\d{1,2})\.(\d{2,4})$", s)
     if m:
         d, mo, y = int(m.group(1)), int(m.group(2)), int(m.group(3))
@@ -214,7 +190,6 @@ def load_latest_dates_by_org(all_reviews_csv: str, platform: str) -> Dict[str, d
     return latest
 
 
-# --------------------- SUMMARY утилиты ---------------------
 def _num_from_text(text: Optional[str]):
     if not text:
         return None
@@ -238,7 +213,7 @@ def _float_from_text(text: Optional[str]):
             return float(m.group(1).replace("\u202f", "").replace(",", "."))
         except ValueError:
             pass
-    m2 = re.search(r"(?<!\d)(\d)(?![\d,\.])", t)  # иногда просто «4»
+    m2 = re.search(r"(?<!\d)(\d)(?![\d,\.])", t)
     if m2:
         return float(m2.group(1))
     return None
@@ -332,8 +307,6 @@ def extract_summary(driver):
 
     return rating_avg, ratings_count, reviews_count
 
-
-# --------------------- Selenium утилиты ---------------------
 def build_options() -> Options:
     opts = Options()
     opts.binary_location = str(yb)
@@ -341,7 +314,7 @@ def build_options() -> Options:
     opts.add_argument("--no-sandbox")
     opts.add_argument("--disable-dev-shm-usage")
     opts.page_load_strategy = "eager"
-    # Важно: если сталкиваетесь с конфликтом профиля, удалите следующие две строки
+
     user_dir = str(Path.home() / ".yandex-scraper-profile")
     opts.add_argument(f"--user-data-dir={user_dir}")
     opts.add_argument("--profile-directory=Default")
@@ -453,20 +426,32 @@ def get_scroll_container(driver):
     WebDriverWait(driver, WAIT_TIMEOUT).until(
         EC.presence_of_element_located((By.CSS_SELECTOR, "div.business-review-view"))
     )
-    first_review = driver.find_element(By.CSS_SELECTOR, "div.business-review-view")
-    return driver.execute_script("""
-        var el = arguments[0];
-        function isScrollable(e){
-            if(!e) return false;
-            var s = getComputedStyle(e);
-            return /(auto|scroll)/.test(s.overflowY);
+    js = """
+    (function(){
+      // сперва явные селекторы
+      const sels = [
+        "div.business-reviews-card-view__scroll",
+        "div.card-section-view__scroll",
+        "section.business-reviews-card-view__reviews",
+        "div.business-review-view"
+      ];
+      for (const s of sels){
+        const el = document.querySelector(s);
+        if (el){
+          const st = getComputedStyle(el);
+          if (el.scrollHeight > el.clientHeight ||
+              /(auto|scroll)/.test(st.overflowY)) return el;
         }
-        while (el){
-            if (isScrollable(el)) return el;
-            el = el.parentElement;
-        }
-        return document.scrollingElement || document.body;
-    """, first_review)
+      }
+      // эвристика: самый «прокручиваемый» контейнер
+      const cands = Array.from(document.querySelectorAll("div,section")).filter(e=>{
+        const st = getComputedStyle(e);
+        return (e.scrollHeight > e.clientHeight) && /(auto|scroll)/.test(st.overflowY);
+      }).sort((a,b)=>(b.scrollHeight-b.clientHeight)-(a.scrollHeight-a.clientHeight));
+      return cands[0] || document.scrollingElement || document.body;
+    })();
+    """
+    return driver.execute_script(js)
 
 
 def autoscroll_burst(driver, container, ms: int):
@@ -508,7 +493,6 @@ def expand_all_visible(driver, scope=None):
         pass
 
 
-# --------------------- Извлечение карточек ---------------------
 def extract_review(review_el, driver):
     author = ""
     try:
@@ -593,16 +577,13 @@ def collect_visible_delta(driver, seen: set, out: list, strictly_newer_than: dat
     return added, met_not_newer
 
 
-# --------------------- Основной цикл ---------------------
 def main():
-    # 1) Загружаем «последние даты» по организациям из общего CSV
     latest_by_org = load_latest_dates_by_org(IN_ALL_REVIEWS_CSV, PLATFORM)
     if latest_by_org:
         print(f"[INFO] Найдены последние даты по {len(latest_by_org)} организациям в '{IN_ALL_REVIEWS_CSV}'.")
     else:
         print(f"[INFO] '{IN_ALL_REVIEWS_CSV}' не найден или пуст — будем собирать всё, что есть (порог = 1900-01-01).")
 
-    # 2) Список ссылок
     try:
         urls = [u.strip() for u in Path(YAMAPS_URLS_FILE).read_text(encoding="utf-8").splitlines() if u.strip()]
     except FileNotFoundError:
@@ -613,7 +594,6 @@ def main():
         print("[ERROR] Нет входных ссылок для обработки.")
         return
 
-    # Подготовка выходных CSV
     Path(OUT_CSV_DELTA).parent.mkdir(parents=True, exist_ok=True)
     Path(OUT_CSV_SUMMARY_NEW).parent.mkdir(parents=True, exist_ok=True)
 
@@ -642,7 +622,6 @@ def main():
                 print("  [SKIP] Не удалось открыть окно/URL.")
                 continue
 
-            # ожидаем шапку или любую карточку
             try:
                 WebDriverWait(driver, WAIT_TIMEOUT).until(
                     EC.presence_of_element_located((By.CSS_SELECTOR, "div.orgpage-header-view, div.business-review-view"))
@@ -656,9 +635,7 @@ def main():
 
             print(f"  Организация: {organization or '-'} | Пороговая дата (последняя в all_reviews): {threshold.isoformat()}")
 
-            # --- SUMMARY (до перехода к отзывам/скроллу)
             try:
-                # Убедимся, что вкладка «Отзывы» открыта (там видны нужные блоки)
                 try:
                     h2 = driver.find_elements(By.CSS_SELECTOR, "h2.card-section-header__title._wide")
                     if not h2:
@@ -686,7 +663,6 @@ def main():
                 "reviews_count": reviews_count if reviews_count is not None else "",
             })
 
-            # --- REVIEWS
             try:
                 WebDriverWait(driver, WAIT_TIMEOUT).until(
                     EC.presence_of_element_located((By.CSS_SELECTOR, "div.business-review-view"))
@@ -696,7 +672,7 @@ def main():
                 continue
 
             inject_perf_css(driver)
-            set_sort_newest_yamaps(driver)  # «По новизне»
+            set_sort_newest_yamaps(driver)
 
             container = get_scroll_container(driver)
 
@@ -704,12 +680,10 @@ def main():
             stop = False
             expand_all_visible(driver)
 
-            # первый проход
             _, met_not_newer = collect_visible_delta(driver, seen, batch, threshold)
             if met_not_newer:
                 stop = True
 
-            # автоскролл
             idle = 0
             for _ in range(BURSTS):
                 if stop:
@@ -727,7 +701,6 @@ def main():
                 if idle >= IDLE_LIMIT:
                     break
 
-            # пишем «дельту» (только нужные колонки)
             for r in batch:
                 reviews_writer.writerow({
                     "rating":       r.get("rating"),
@@ -751,7 +724,6 @@ def main():
     print(f"\nГотово.")
     print(f"Отзывы → {OUT_CSV_DELTA}")
     print(f"Summary (новый) → {OUT_CSV_SUMMARY_NEW}")
-
 
 if __name__ == "__main__":
     main()

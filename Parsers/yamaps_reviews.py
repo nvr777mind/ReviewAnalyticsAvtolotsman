@@ -1,5 +1,3 @@
-# -*- coding: utf-8 -*-
-
 import csv
 import re
 from datetime import datetime, timedelta
@@ -26,25 +24,24 @@ from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.chrome.service import Service
 from typing import Optional
 
-# ===== вход =====
-YAMAPS_URLS_FILE = "./Urls/yamaps_urls.txt"  # по одной ссылке на строку
+YAMAPS_URLS_FILE = "./Urls/yamaps_urls.txt"
 FALLBACK_URL = ("https://yandex.ru/maps/org/avtolotsman/1694054504/reviews/"
                 "?ll=44.957771%2C53.220474&mode=search&sll=44.986159%2C53.218956"
                 "&sspn=0.086370%2C0.033325&tab=reviews&text=автолоцман&z=14")
 
-# === УКАЖИ ПУТИ К БРАУЗЕРУ И ДРАЙВЕРУ ===
-YANDEXDRIVER_PATH     = "Drivers/Windows/yandexdriver.exe"                             # поменять для windows
+if platform.system() == "Windows":
+    YANDEXDRIVER_PATH = "Drivers/Windows/yandexdriver.exe"
+else:
+    YANDEXDRIVER_PATH = "Drivers/MacOS/yandexdriver"
 
-# === КУДА ПИСАТЬ CSV ===
 OUT_CSV_REVIEWS  = "Csv/Reviews/yamaps_reviews.csv"
 OUT_CSV_SUMMARY  = "Csv/Summary/yamaps_summary.csv"
 
-# Параметры
 WAIT_TIMEOUT   = 60
-BURSTS         = 12      # сколько "рывков" автоскролла сделаем на страницу
-BURST_MS       = 1200    # длительность одного рывка (мс)
-IDLE_LIMIT     = 3       # сколько раз подряд можно не находить новых карточек прежде чем остановиться
-YEARS_LIMIT    = 2       # ЛИМИТ возраста отзывов в годах
+BURSTS         = 12
+BURST_MS       = 1200
+IDLE_LIMIT     = 3
+YEARS_LIMIT    = 2
 
 MONTHS_RU = {
     "января": 1, "февраля": 2, "марта": 3, "апреля": 4, "мая": 5, "июня": 6,
@@ -54,9 +51,7 @@ RELATIVE_MAP = {"сегодня": 0, "вчера": -1}
 
 PLATFORM = "Yandex Maps"
 
-# ---- где лежит браузер Яндекс ----
 def find_yandex_browser() -> Optional[Path]:
-    # 1) ручное переопределение
     env = os.environ.get("YANDEX_BROWSER_PATH")
     if env and Path(env).is_file():
         return Path(env)
@@ -78,13 +73,9 @@ def find_yandex_browser() -> Optional[Path]:
         p = Path("/Applications/Yandex.app/Contents/MacOS/Yandex")
         return p if p.is_file() else None
 
-# ---- инициализация Selenium ----
 yb = find_yandex_browser()
 
-# --------------------- Утилиты для summary ---------------------
-
 def _num_from_text(text: str):
-    # "793 оценки" → 793 (учтём пробелы/неразрывные)
     if not text:
         return None
     t = text.replace("\xa0", " ")
@@ -97,7 +88,6 @@ def _num_from_text(text: str):
         return None
 
 def _float_from_text(text: str):
-    # "Рейтинг 4,6" → 4.6  (поддержка , . и узких пробелов)
     if not text:
         return None
     t = text.replace("\xa0", " ")
@@ -107,7 +97,7 @@ def _float_from_text(text: str):
             return float(m.group(1).replace("\u202f", "").replace(",", "."))
         except ValueError:
             pass
-    m2 = re.search(r"(?<!\d)(\d)(?![\d,\.])", t)  # иногда просто "4"
+    m2 = re.search(r"(?<!\d)(\d)(?![\d,\.])", t)
     if m2:
         return float(m2.group(1))
     return None
@@ -121,29 +111,23 @@ def extract_summary(driver):
     ratings_count = None
     reviews_count = None
 
-    # --- 1) Явные селекторы (как у вас)
     try:
-        # средний рейтинг
         r_block = driver.find_elements(By.CSS_SELECTOR, "div.business-summary-rating-badge-view__rating")
         if r_block:
             rating_avg = _float_from_text(r_block[0].inner_text if hasattr(r_block[0], "inner_text") else r_block[0].text)
 
-        # количество оценок
         r_span = driver.find_elements(By.CSS_SELECTOR, "span.business-rating-amount-view._summary")
         if r_span:
             ratings_count = _num_from_text(r_span[0].text)
 
-        # количество отзывов (старый вариант заголовка)
         h2 = driver.find_elements(By.CSS_SELECTOR, "h2.card-section-header__title._wide")
         if h2:
             reviews_count = _num_from_text(h2[0].text)
     except Exception:
         pass
 
-    # --- 2) Альтернативные места, где встречается число отзывов
     if reviews_count is None:
         try:
-            # Иногда в заголовке без модификатора _wide:
             h2_any = driver.find_elements(By.CSS_SELECTOR, "h2.card-section-header__title, h2[class*='card-section-header__title']")
             for el in h2_any:
                 t = (el.text or "").lower()
@@ -156,12 +140,9 @@ def extract_summary(driver):
 
     if reviews_count is None:
         try:
-            # Иногда пишут "Отзывы 250" в табе/кнопке/ссылке
             candidates = driver.find_elements(By.XPATH, "//*[self::a or self::div or self::span][contains(translate(., 'ОТЗЫВЫ', 'отзывы'), 'отзывы')]")
             for el in candidates:
                 txt = (el.text or "").replace("\xa0", " ").strip()
-                # Ищем число рядом со словом "Отзывы"
-                # Примеры: "Отзывы 250", "Отзывы • 1 234"
                 m = re.search(r"отзыв[а-я]*[^0-9]*([\d\s]+)", txt, flags=re.I)
                 if not m:
                     m = re.search(r"Отзывы[^0-9]*([\d\s]+)", txt, flags=re.I)
@@ -174,7 +155,6 @@ def extract_summary(driver):
         except Exception:
             pass
 
-    # --- 3) Пас на страницу: regex по HTML (самый надёжный fallback)
     html = driver.page_source
 
     if rating_avg is None:
@@ -198,12 +178,10 @@ def extract_summary(driver):
                 pass
 
     if reviews_count is None:
-        # Поддержим все формы: отзыв / отзыва / отзывов; а также паттерн "Отзывы 1234"
         m = re.search(r'>\s*([\d\s]+)\s+отзыв(?:ов|а)?\s*<', html, re.I)
         if not m:
             m = re.search(r'Отзывы[^0-9]{0,12}([\d\s]+)<', html, re.I)
         if not m:
-            # Некоторые шаблоны пишут число в data-атрибуты
             m = re.search(r'data-qa="reviews-count"[^>]*>\s*([\d\s]+)\s*<', html, re.I)
         if m:
             try:
@@ -212,8 +190,6 @@ def extract_summary(driver):
                 pass
 
     return rating_avg, ratings_count, reviews_count
-
-# --------------------- Утилиты для отзывов ---------------------
 
 def parse_rating(aria_label: str):
     if not aria_label:
@@ -263,7 +239,6 @@ def build_options() -> Options:
     opts.add_argument("--no-sandbox")
     opts.add_argument("--disable-dev-shm-usage")
     opts.page_load_strategy = 'eager'
-    # постоянный профиль: логин, куки, пройденные капчи сохраняются
     user_dir = str(Path.home() / ".yandex-scraper-profile")
     opts.add_argument(f"--user-data-dir={user_dir}")
     opts.add_argument("--profile-directory=Default")
@@ -497,7 +472,7 @@ def collect_visible_batch(driver, seen: set, out: list, cutoff_date) -> tuple[in
 
 def extract_organization_from_url(url: str) -> str:
     try:
-        path = urlparse(url).path  # /maps/org/avtolotsman/1694054504/reviews/
+        path = urlparse(url).path
         m = re.search(r"/org/([^/]+)/", path)
         if m:
             return unquote(m.group(1))
@@ -505,10 +480,7 @@ def extract_organization_from_url(url: str) -> str:
         pass
     return ""
 
-# --------------------- Основной рабочий цикл ---------------------
-
 def main():
-    # читаем список ссылок; если файла нет — используем fallback
     try:
         urls = [u.strip() for u in Path(YAMAPS_URLS_FILE).read_text(encoding="utf-8").splitlines() if u.strip()]
         if not urls:
@@ -518,7 +490,6 @@ def main():
 
     Path(OUT_CSV_REVIEWS).parent.mkdir(parents=True, exist_ok=True)
 
-    # Подготавливаем CSV писатели (открыты один раз)
     f_rev = open(OUT_CSV_REVIEWS, "w", newline="", encoding="utf-8")
     f_sum = open(OUT_CSV_SUMMARY, "w", newline="", encoding="utf-8")
     w_rev = csv.DictWriter(f_rev, fieldnames=["rating","author","date_iso","text","platform","organization"], quoting=csv.QUOTE_ALL)
@@ -532,7 +503,6 @@ def main():
             print(f"[{i}/{len(urls)}] {url}")
 
             if not safe_get(driver, url):
-                # пробуем перезагрузить вкладку ещё раз
                 if not safe_get(driver, url):
                     print("  пропускаю: не удалось открыть URL")
                     continue
@@ -541,7 +511,6 @@ def main():
                 print("  пропускаю: окно браузера недоступно")
                 continue
 
-            # дождаться появления карточек/шапки
             try:
                 WebDriverWait(driver, WAIT_TIMEOUT).until(
                     EC.presence_of_element_located((By.CSS_SELECTOR, "div.orgpage-header-view, div.business-review-view"))
@@ -550,13 +519,10 @@ def main():
                 print("  пропускаю: страница не загрузилась")
                 continue
 
-            # --- ORGANIZATION (из текущего url)
             current = driver.current_url or url
             organization = extract_organization_from_url(current) or ""
 
-            # === 1) SUMMARY (не перезагружая страницу)
             try:
-                # если мы внезапно не на вкладке «Отзывы», кликнем по табу «Отзывы» — там видны все нужные блоки
                 try:
                     h2 = driver.find_elements(By.CSS_SELECTOR, "h2.card-section-header__title._wide")
                     if not h2:
@@ -584,7 +550,6 @@ def main():
                 "reviews_count": reviews_count if reviews_count is not None else "",
             })
 
-            # === 2) ОТЗЫВЫ (та же страница)
             try:
                 WebDriverWait(driver, WAIT_TIMEOUT).until(
                     EC.presence_of_element_located((By.CSS_SELECTOR, "div.business-review-view"))
@@ -594,7 +559,7 @@ def main():
                 continue
 
             inject_perf_css(driver)
-            set_sort_newest_yamaps(driver)  # по новизне — чтобы быстро наткнуться на «старые»
+            set_sort_newest_yamaps(driver)
 
             container = get_scroll_container(driver)
             cutoff_date = datetime.now().date() - timedelta(days=365*YEARS_LIMIT)

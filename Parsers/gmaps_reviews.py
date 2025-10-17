@@ -26,7 +26,11 @@ from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.chrome.service import Service
 
-DRIVER_PATH    = "Drivers/MacOS/yandexdriver"
+if platform.system() == "Windows":
+    DRIVER_PATH = "Drivers/Windows/yandexdriver.exe"
+else:
+    DRIVER_PATH = "Drivers/MacOS/yandexdriver"
+
 URLS_FILE      = "Urls/gmaps_urls.txt"
 
 OUT_CSV_REV    = "Csv/Reviews/gmaps_reviews.csv"
