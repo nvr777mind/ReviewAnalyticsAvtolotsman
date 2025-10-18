@@ -722,8 +722,8 @@ def main():
         out_f_summary.close()
 
     print(f"\nГотово.")
-    print(f"Отзывы → {OUT_CSV_DELTA}")
-    print(f"Summary (новый) → {OUT_CSV_SUMMARY_NEW}")
+    print(f"Отзывы -> {OUT_CSV_DELTA}")
+    print(f"Summary (новый) -> {OUT_CSV_SUMMARY_NEW}")
 
 if __name__ == "__main__":
     main()

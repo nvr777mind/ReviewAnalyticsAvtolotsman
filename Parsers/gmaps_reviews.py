@@ -891,7 +891,7 @@ def main():
         f_rev.close()
         f_sum.close()
 
-    print(f"Готово. Reviews → {OUT_CSV_REV} | Summary → {OUT_CSV_SUM}")
+    print(f"Готово. Reviews -> {OUT_CSV_REV} | Summary -> {OUT_CSV_SUM}")
 
 if __name__ == "__main__":
     main()

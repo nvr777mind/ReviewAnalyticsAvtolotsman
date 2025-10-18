@@ -1,6 +1,3 @@
-# merged_reviews.py
-# просто объединяет несколько CSV с одинаковым хедером в один
-
 import csv
 from pathlib import Path
 
@@ -25,7 +22,6 @@ def main():
                 print(f"⚠️  пропущен: {p} (нет файла)")
                 continue
 
-            # читаем с utf-8-sig, чтобы спокойно проглотить возможный BOM
             with path.open("r", encoding="utf-8-sig", newline="") as fin:
                 rdr = csv.reader(fin)
                 try:
@@ -39,7 +35,6 @@ def main():
                     writer = csv.writer(fout, quoting=csv.QUOTE_ALL)
                     writer.writerow(header)
                 else:
-                    # проверка, что структура совпадает
                     if file_header != header:
                         print(f"⚠️  у {p} другой заголовок, строки будут пропущены")
                         continue
@@ -47,7 +42,7 @@ def main():
                 for row in rdr:
                     writer.writerow(row)
 
-    print(f"Готово → {OUT}")
+    print(f"Готово -> {OUT}")
 
 if __name__ == "__main__":
     main()

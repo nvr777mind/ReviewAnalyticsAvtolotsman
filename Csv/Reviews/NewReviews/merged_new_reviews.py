@@ -1,24 +1,6 @@
-# -*- coding: utf-8 -*-
-"""
-Слияние трёх *new_since.csv в единый all_new_since.csv, затем — в all_reviews.csv (с дедупликацией).
-
-Источник дельт:
-  Csv/Reviews/NewReviews/yamaps_new_since.csv
-  Csv/Reviews/NewReviews/gmaps_new_since.csv
-  Csv/Reviews/NewReviews/2gis_new_since.csv
-
-Результаты:
-  Csv/Reviews/NewReviews/all_new_since.csv     (объединённая дельта)
-  Csv/Reviews/all_reviews.csv                  (пополнённая база)
-
-Базовые обязательные поля отзыва:
-  rating, author, date_iso, text, platform, organization
-"""
-
 import csv
 from pathlib import Path
 
-# ----- Пути -----
 NEWREV_DIR = Path("Csv/Reviews/NewReviews")
 DELTA_FILES = [
     NEWREV_DIR / "yamaps_new_since.csv",
@@ -29,11 +11,9 @@ ALL_NEW_SINCE = NEWREV_DIR / "all_new_since.csv"
 
 ALL_REVIEWS = Path("Csv/Reviews/all_reviews.csv")
 
-# ----- Базовые поля -----
 BASE_FIELDS = ["rating", "author", "date_iso", "text", "platform", "organization"]
 
 
-# ===== Вспомогательные =====
 def _norm(s: str) -> str:
     """Нормализация для ключа: трим + свёртка пробелов + убираем \r\n."""
     if s is None:
@@ -79,7 +59,6 @@ def _write_csv(path: Path, fieldnames: list[str], rows: list[dict]) -> None:
             w.writerow(out)
 
 
-# ===== Основная логика =====
 def build_all_new_since(delta_paths: list[Path]) -> tuple[list[dict], list[str], int]:
     """
     Объединяет несколько дельт в одну с дедупликацией.
@@ -96,15 +75,12 @@ def build_all_new_since(delta_paths: list[Path]) -> tuple[list[dict], list[str],
     for p in delta_paths:
         rows, flds = _read_csv_safe(p)
         total_in_sources += len(rows)
-        # расширяем список полей новыми столбцами, сохраняя порядок
         for col in (flds or []):
             if col not in union_fields:
                 union_fields.append(col)
 
-        # добавляем строки с нормализацией и локальным дедупом
         local_seen = set()
         for row in rows:
-            # аккуратно чистим базовые поля от \r\n и лишних пробелов
             for k in BASE_FIELDS:
                 if k in row and isinstance(row[k], str):
                     row[k] = _norm(row[k])
@@ -120,7 +96,6 @@ def build_all_new_since(delta_paths: list[Path]) -> tuple[list[dict], list[str],
 
             combined.append(row)
 
-    # гарантируем присутствие базовых столбцов
     for bf in BASE_FIELDS:
         if bf not in union_fields:
             union_fields.append(bf)
@@ -135,7 +110,6 @@ def merge_into_all_reviews(all_new_rows: list[dict], new_fields: list[str]) -> i
     """
     all_rows, all_fields = _read_csv_safe(ALL_REVIEWS)
 
-    # расширяем поле-набор all_reviews новыми столбцами
     for col in new_fields:
         if col not in all_fields:
             all_fields.append(col)
@@ -159,11 +133,9 @@ def merge_into_all_reviews(all_new_rows: list[dict], new_fields: list[str]) -> i
 
 
 def main():
-    # 1) строим объединённую дельту all_new_since.csv
     combined_rows, combined_fields, total_src = build_all_new_since(DELTA_FILES)
     _write_csv(ALL_NEW_SINCE, combined_fields, combined_rows)
 
-    # 2) добавляем объединённую дельту в all_reviews.csv
     added = merge_into_all_reviews(combined_rows, combined_fields)
 
     print("[OK] Объединение дельт завершено.")

@@ -1,19 +1,14 @@
-# -*- coding: utf-8 -*-
-
 import csv
 from pathlib import Path
 
-# ---- входные пути
 IN_FILES = [
     Path("Csv/Summary/yamaps_summary.csv"),
     Path("Csv/Summary/gmaps_summary.csv"),
     Path("Csv/Summary/2gis_summary.csv"),
 ]
 
-# ---- выходной путь
 OUT_FILE = Path("Csv/Summary/all_summary.csv")
 
-# ---- вспомогалки
 PLATFORM_ORDER = {
     "Yandex Maps": 0,
     "Google Maps": 1,
@@ -28,14 +23,12 @@ def to_float(x):
     try:
         return float(s)
     except Exception:
-        # если вдруг приходит что-то типа "—" или "N/A"
         return 0.0
 
 def to_int(x):
     if x is None: return 0
     s = str(x).strip().replace("\xa0", " ").replace("\u202f", " ")
     if s == "": return 0
-    # вытащим только цифры и пробелы
     digits = "".join(ch for ch in s if ch.isdigit() or ch == " ")
     digits = digits.replace(" ", "")
     try:
@@ -52,7 +45,6 @@ def read_one(path: Path):
         return rows
     with path.open("r", encoding="utf-8", newline="") as f:
         r = csv.DictReader(f)
-        # ожидаемые поля
         for row in r:
             rows.append({
                 "organization": (row.get("organization") or "").strip(),
@@ -64,7 +56,6 @@ def read_one(path: Path):
     return rows
 
 def main():
-    # собираем все
     merged = []
     for p in IN_FILES:
         merged.extend(read_one(p))
@@ -73,19 +64,16 @@ def main():
         print("Нет входных файлов с данными. Нечего объединять.")
         return
 
-    # удаляем дубли по (organization, platform) — оставляем последнюю
     dedup = {}
     for row in merged:
         key = (row["organization"], row["platform"])
         dedup[key] = row
 
-    # сортируем
     merged_unique = sorted(
         dedup.values(),
         key=lambda x: (x["organization"].lower(), platform_sort_key(x["platform"]), x["platform"].lower())
     )
 
-    # пишем csv
     OUT_FILE.parent.mkdir(parents=True, exist_ok=True)
     with OUT_FILE.open("w", encoding="utf-8", newline="") as f:
         w = csv.DictWriter(f, fieldnames=["organization","platform","rating_avg","ratings_count","reviews_count"], quoting=csv.QUOTE_ALL)

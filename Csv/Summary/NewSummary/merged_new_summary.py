@@ -1,25 +1,6 @@
-# -*- coding: utf-8 -*-
-"""
-Объединение трёх *summary_new.csv в один all_new_summary.csv без слияния в all_summary.
-
-Источники (если какого-то файла нет — он пропускается):
-  Csv/Summary/NewSummary/yamaps_summary_new.csv
-  Csv/Summary/NewSummary/gmaps_summary_new.csv
-  Csv/Summary/NewSummary/2gis_summary_new.csv
-
-Результат:
-  Csv/Summary/NewSummary/all_new_summary.csv
-
-Полям принудительно приводятся типы/форматы:
-  - rating_avg: число -> строка; если пусто/ошибка -> "0"
-    (ноль пишется как "0", а не "0.0")
-  - ratings_count, reviews_count: целые -> строка; пусто/ошибка -> "0"
-"""
-
 import csv
 from pathlib import Path
 
-# ----- Пути -----
 BASE_DIR = Path("Csv/Summary/NewSummary")
 INPUTS = [
     BASE_DIR / "yamaps_summary_new.csv",
@@ -51,14 +32,11 @@ def _to_rating_str(x: str) -> str:
         val = float(s)
     except Exception:
         return "0"
-    # избегаем '0.0'
     if abs(val) < 1e-9:
         return "0"
-    # убираем лишний .0 у целых
     if abs(val - int(val)) < 1e-9:
         return str(int(val))
-    # короткая форма без лишних нулей в конце
-    s = f"{val:.10g}"  # ограничим длину
+    s = f"{val:.10g}"
     return s
 
 
@@ -67,7 +45,6 @@ def _to_int_str(x: str) -> str:
     s = (x or "").replace("\u202f", " ").replace("\xa0", " ").strip()
     if not s:
         return "0"
-    # вытащим первую числовую подпоследовательность
     num = ""
     for ch in s:
         if ch.isdigit():
@@ -75,7 +52,6 @@ def _to_int_str(x: str) -> str:
         elif num:
             break
     if not num:
-        # вдруг это уже число с минусом/плюсом или '123 456'
         try:
             return str(int("".join(s.split())))
         except Exception:
@@ -104,13 +80,10 @@ def _normalize_row(row: dict) -> dict:
 
 
 def main():
-    # читаем все входы
     raw_rows: list[dict] = []
     for p in INPUTS:
         raw_rows.extend(_read_rows(p))
 
-    # нормализуем и дедупим по (platform, organization)
-    # если дубликаты — берём тот, у которого больше reviews_count (как более «свежий»/полный)
     merged: dict[tuple[str, str], dict] = {}
     for r in raw_rows:
         nr = _normalize_row(r)
@@ -118,7 +91,6 @@ def main():
         if k not in merged:
             merged[k] = nr
         else:
-            # выбираем запись с бОльшим reviews_count
             try:
                 cur = int(merged[k]["reviews_count"])
                 new = int(nr["reviews_count"])
@@ -128,12 +100,10 @@ def main():
             if new > cur:
                 merged[k] = nr
 
-    # записываем результат
     OUT.parent.mkdir(parents=True, exist_ok=True)
     with OUT.open("w", encoding="utf-8", newline="") as f:
         w = csv.DictWriter(f, fieldnames=FIELDS, quoting=csv.QUOTE_ALL)
         w.writeheader()
-        # можно упорядочить по platform, затем organization
         for _, row in sorted(merged.items(), key=lambda kv: (kv[0][0], kv[0][1])):
             w.writerow(row)
 

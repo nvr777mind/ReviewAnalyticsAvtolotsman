@@ -58,7 +58,7 @@ def find_yandex_browser() -> Optional[Path]:
 
 yb = find_yandex_browser()
 
-SPEED_PROFILE = "fast"
+SPEED_PROFILE = "safe"
 HEADLESS      = False
 
 if SPEED_PROFILE == "safe":
@@ -736,10 +736,10 @@ def main():
             })
 
     print(f"\nГотово.")
-    print(f"Отзывы (2ГИС) → {OUT_CSV_REV_DELTA}")
-    print(f"Summary (новый, 2ГИС) → {OUT_CSV_SUMMARY_NEW}")
-    print(f"Базовое summary (для старого счётчика) → {SUMMARY_BASE_CSV}")
-    print(f"Пороговая база дат → {ALL_REVIEWS_CSV}")
+    print(f"Отзывы (2ГИС) -> {OUT_CSV_REV_DELTA}")
+    print(f"Summary (новый, 2ГИС) -> {OUT_CSV_SUMMARY_NEW}")
+    print(f"Базовое summary (для старого счётчика) -> {SUMMARY_BASE_CSV}")
+    print(f"Пороговая база дат -> {ALL_REVIEWS_CSV}")
 
 if __name__ == "__main__":
     main()

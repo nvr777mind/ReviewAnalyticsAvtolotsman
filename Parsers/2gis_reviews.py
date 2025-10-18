@@ -41,7 +41,7 @@ PROFILE_DIR           = str(Path.home() / ".yandex-2gis-scraper")
 OUT_CSV = "Csv/Reviews/2gis_reviews.csv"
 OUT_CSV_SUMMARY = "Csv/Summary/2gis_summary.csv"
 
-WAIT_TIMEOUT        = 8
+WAIT_TIMEOUT        = 16
 BURSTS              = 12
 BURST_MS            = 520
 IDLE_LIMIT          = 1

@@ -1,4 +1,3 @@
-# reviews_viewer.py
 import sys
 import csv
 import json
@@ -19,11 +18,9 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtGui import QTextOption, QTextDocument, QPainter
 
-# matplotlib (QtAgg для PyQt6)
 from matplotlib.figure import Figure
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 
-# === Уведомления (только plyer) ===
 try:
     from plyer import notification as plyer_notification
 except Exception:
@@ -33,10 +30,8 @@ def _is_frozen() -> bool:
     return getattr(sys, "frozen", False)
 
 def _app_dir() -> Path:
-    # В сборке: папка, где лежит твой ReviewAnalytics.exe и соседние exe парсеров
     if _is_frozen():
         return Path(sys.executable).resolve().parent
-    # В dev-режиме: корень проекта
     return Path(".").resolve()
 
 def _runtime_path(py_rel_path: Path) -> Path:
@@ -57,7 +52,6 @@ def _script_cmd(py_rel_path: Path) -> tuple[str, list[str]]:
         return (str(_runtime_path(py_rel_path)), [])
     return (sys.executable, [str(py_rel_path)])
 
-# ---------- Модель DataFrame → Qt ----------
 class DataFrameModel(QAbstractTableModel):
     def __init__(self, df: pd.DataFrame):
         super().__init__()
@@ -77,14 +71,13 @@ class DataFrameModel(QAbstractTableModel):
 
         r, c = index.row(), index.column()
 
-        # Чекбокс для need_answer
         if self._need_answer_idx is not None and c == self._need_answer_idx:
             if role == Qt.ItemDataRole.CheckStateRole:
                 val = self._df.iat[r, c]
                 checked = str(val).strip().lower() in {"1", "true", "yes", "y", "да"}
                 return Qt.CheckState.Checked if checked else Qt.CheckState.Unchecked
             if role in (Qt.ItemDataRole.DisplayRole, Qt.ItemDataRole.EditRole):
-                return ""  # текст в ячейке не нужен, только чекбокс
+                return ""
 
         if role in (Qt.ItemDataRole.DisplayRole, Qt.ItemDataRole.EditRole):
             val = self._df.iat[r, c]
@@ -100,7 +93,6 @@ class DataFrameModel(QAbstractTableModel):
 
         r, c = index.row(), index.column()
 
-        # Обработка клика по чекбоксу need_answer
         if self._need_answer_idx is not None and c == self._need_answer_idx and role == Qt.ItemDataRole.CheckStateRole:
             self._df.iat[r, c] = 1 if value == Qt.CheckState.Checked else 0
             self.dataChanged.emit(index, index, [Qt.ItemDataRole.CheckStateRole, Qt.ItemDataRole.DisplayRole])
@@ -134,8 +126,6 @@ class DataFrameModel(QAbstractTableModel):
     def refresh_need_answer_index(self):
         self._need_answer_idx = self.column_name_to_index("need_answer")
 
-
-# ---------- Делегат для переносов и авто-высоты текста ----------
 class TextWrapDelegate(QStyledItemDelegate):
     def __init__(self, table: QTableView,
                  wrap_mode=QTextOption.WrapMode.WrapAtWordBoundaryOrAnywhere):
@@ -165,8 +155,6 @@ class TextWrapDelegate(QStyledItemDelegate):
         h = int(doc.size().height()) + 8
         return QSize(width + 12, h)
 
-
-# ---------- Делегат чекбокса для need_answer ----------
 class CheckBoxDelegate(QStyledItemDelegate):
     def paint(self, painter, option, index):
         opt = QStyleOptionButton()
@@ -193,8 +181,6 @@ class CheckBoxDelegate(QStyledItemDelegate):
         new_state = Qt.CheckState.Unchecked if cur == Qt.CheckState.Checked else Qt.CheckState.Checked
         return model.setData(index, new_state, Qt.ItemDataRole.CheckStateRole)
 
-
-# ---------- Прокси с фильтрами ----------
 class ReviewFilterProxyModel(QSortFilterProxyModel):
     def __init__(self, src: DataFrameModel):
         super().__init__()
@@ -325,9 +311,8 @@ class ReviewFilterProxyModel(QSortFilterProxyModel):
             if self._date_to is not None and d > self._date_to:
                 return False
 
-        # --- need_answer filter (читаем сырое значение из DataFrame, а не DisplayRole) ---
         if self._need_answer is not None and self.col_need_answer is not None:
-            src_model: DataFrameModel = self.sourceModel()  # type: ignore
+            src_model: DataFrameModel = self.sourceModel()
             raw = src_model.get_dataframe().iat[src_row, self.col_need_answer]
             is_true = self._truthy_need_answer(raw)
             if is_true != self._need_answer:
@@ -373,7 +358,6 @@ class DateEditWithDash(QDateEdit):
         self._start_year, self._start_month = year, month
 
 
-# ---------- Главное окно ----------
 class MainWindow(QMainWindow):
     def __init__(self, df: Optional[pd.DataFrame] = None):
         super().__init__()
@@ -398,14 +382,12 @@ class MainWindow(QMainWindow):
         self._model: Optional[DataFrameModel] = None
         self._proxy: Optional[ReviewFilterProxyModel] = None
 
-        # индексы для раскладки
         self._text_col: Optional[int] = None
         self._col_rating: Optional[int] = None
         self._col_platform: Optional[int] = None
         self._col_org: Optional[int] = None
         self._col_need_answer: Optional[int] = None
 
-        # доли/ширины
         self._text_col_ratio = 0.50
         self._org_col_ratio = 0.17
         self._RATING_W = 10
@@ -414,7 +396,6 @@ class MainWindow(QMainWindow):
         self._ORG_MAX = 460
         self._NEED_ANSWER_W = 130
 
-        # --- фильтры ---
         self._platform_combo = QComboBox()
         self._org_combo = QComboBox()
         self._sentiment_combo = QComboBox()
@@ -429,7 +410,6 @@ class MainWindow(QMainWindow):
         self._rmin.setSpecialValueText("—"); self._rmax.setSpecialValueText("—")
         self._rmin.setValue(0); self._rmax.setValue(0)
 
-        # --- даты ---
         self._date_from.setDisplayFormat("yyyy-MM-dd")
         self._date_to.setDisplayFormat("yyyy-MM-dd")
         self._date_from.setSpecialValueText("—")
@@ -439,22 +419,18 @@ class MainWindow(QMainWindow):
         self._date_from.setDate(self._date_from.minimumDate())
         self._date_to.setDate(self._date_to.minimumDate())
 
-        # -------- Контейнер фильтров --------
         self._filters_group = QGroupBox("Фильтры")
         self._filters_group.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Expanding)
 
-        # --- кнопки действий ---
         apply_btn = QPushButton("Применить фильтры")
         clear_btn = QPushButton("Сбросить фильтры")
 
-        # Две кнопки экспорта
         export_csv_btn = QPushButton("Экспорт отфильтрованного в CSV")
         export_json_btn = QPushButton("Экспорт отфильтрованного в JSON")
 
         run_all_btn = QPushButton("Собрать данные заново")
         run_incr_btn = QPushButton("Собрать только новое")
 
-        # стили кнопок
         apply_btn.setStyleSheet("""
             QPushButton {
                 background-color: #d4edda; border: 1px solid #c3e6cb;
@@ -482,19 +458,16 @@ class MainWindow(QMainWindow):
         run_all_btn.setStyleSheet(common_run_style)
         run_incr_btn.setStyleSheet(common_run_style)
 
-        # сводка (белым)
         self._stats_label = QLabel("Отфильтровано: — | Средний рейтинг: —")
         self._stats_label.setStyleSheet("padding: 2px 0;")
 
-        # ==== CSV-переключатель ====
-        self._csv_mode = "reviews"  # "reviews" | "summary"
+        self._csv_mode = "reviews"
         self._csv_paths = {
             "reviews": Path("Csv/Reviews/all_reviews.csv"),
             "summary": Path("Csv/Summary/all_summary.csv"),
         }
         self._current_csv_path: Optional[Path] = None
 
-        # Кнопка "Переключить" + короткая метка "Отзывы/Сводка"
         self._csv_toggle_btn = QPushButton("Переключить")
         self._csv_toggle_btn.setToolTip("Переключить между набором Отзывы и Сводка")
         self._csv_toggle_btn.setStyleSheet("""
@@ -508,7 +481,6 @@ class MainWindow(QMainWindow):
         self._csv_current_label = QLabel("")
         self._csv_current_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
 
-        # --- Унификация высоты контролов ---
         common_h = 28
         for w in [self._csv_toggle_btn,
                   self._platform_combo, self._org_combo, self._sentiment_combo,
@@ -519,25 +491,22 @@ class MainWindow(QMainWindow):
             w.setFixedHeight(common_h)
             w.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
 
-        # --- Верхняя строка контейнера фильтров ---
         header_row = QVBoxLayout()
         top_buttons = QHBoxLayout()
         top_buttons.addStretch(1)
         top_buttons.addWidget(run_all_btn)
         header_row.addLayout(top_buttons)
-        # новая кнопка — непосредственно под предыдущей
+
         second_row = QHBoxLayout()
         second_row.addStretch(1)
         second_row.addWidget(run_incr_btn)
         header_row.addLayout(second_row)
 
-        # --- Форма фильтров ---
         fl = QFormLayout()
         fl.setLabelAlignment(Qt.AlignmentFlag.AlignLeft)
         fl.setFormAlignment(Qt.AlignmentFlag.AlignLeft)
         fl.setVerticalSpacing(10)
 
-        # Строка с датасетом
         csv_row = QHBoxLayout()
         csv_row.setContentsMargins(0, 0, 0, 0)
         csv_row.setSpacing(8)
@@ -546,12 +515,10 @@ class MainWindow(QMainWindow):
         csv_w = QWidget(); csv_w.setLayout(csv_row)
         fl.addRow(QLabel("Датасет:"), csv_w)
 
-        # Ниже обычные фильтры
         fl.addRow(QLabel("Платформа:"), self._platform_combo)
         fl.addRow(QLabel("Организация:"), self._org_combo)
         fl.addRow(QLabel("Тональность:"), self._sentiment_combo)
 
-        # ----- Рейтинг -----
         rating_row = QHBoxLayout()
         rating_row.setContentsMargins(0, 0, 0, 0)
         rating_row.setSpacing(8)
@@ -564,7 +531,6 @@ class MainWindow(QMainWindow):
         rating_w.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
         fl.addRow(QLabel("Рейтинг:"), rating_w)
 
-        # ----- Дата -----
         date_row = QHBoxLayout()
         date_row.setContentsMargins(0, 0, 0, 0)
         date_row.setSpacing(8)
@@ -577,11 +543,9 @@ class MainWindow(QMainWindow):
         date_w.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
         fl.addRow(QLabel("Дата (date_iso):"), date_w)
 
-        # ----- Требует ответа -----
         self._need_answer_label = QLabel("Требует ответа:")
         fl.addRow(self._need_answer_label, self._need_answer_combo)
 
-        # Кнопки применить/сброс
         btns_top = QHBoxLayout()
         btns_top.setContentsMargins(0, 0, 0, 0)
         btns_top.addWidget(apply_btn)
@@ -589,7 +553,6 @@ class MainWindow(QMainWindow):
         btns_top.addSpacing(12)
         btns_top.addStretch(1)
 
-        # Кнопки экспорта (ниже сводки)
         btns_export = QHBoxLayout()
         btns_export.setContentsMargins(0, 0, 0, 0)
         btns_export.setSpacing(8)
@@ -597,14 +560,12 @@ class MainWindow(QMainWindow):
         btns_export.addWidget(export_json_btn)
         btns_export.addStretch(1)
 
-        # ЛОГ
         self._log = QPlainTextEdit()
         self._log.setReadOnly(True)
         self._log.setPlaceholderText("Лог выполнения парсеров и объединения…")
         self._log.setMinimumHeight(150)
         self._log.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
 
-        # Внутренний лэйаут группы фильтров
         filters_vbox = QVBoxLayout()
         filters_vbox.setContentsMargins(9, 12, 9, 9)
         filters_vbox.setSpacing(8)
@@ -616,7 +577,6 @@ class MainWindow(QMainWindow):
         filters_vbox.addWidget(self._log, 1)
         self._filters_group.setLayout(filters_vbox)
 
-        # -------- Группа диаграмм (справа) --------
         self._charts_group = QGroupBox("Диаграммы")
         self._charts_group.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding)
 
@@ -624,7 +584,6 @@ class MainWindow(QMainWindow):
         charts_vbox.setContentsMargins(9, 12, 9, 9)
         charts_vbox.setSpacing(8)
 
-        # Канвас 1: количество по рейтингу
         self._fig_rating = Figure(figsize=(4, 2.8), tight_layout=True)
         self._ax_rating = self._fig_rating.add_subplot(111)
         self._canvas_rating = FigureCanvas(self._fig_rating)
@@ -632,7 +591,6 @@ class MainWindow(QMainWindow):
         charts_vbox.addWidget(QLabel("Количество комментариев по рейтингу"))
         charts_vbox.addWidget(self._canvas_rating, 1)
 
-        # Канвас 2: доли по тональности
         self._fig_sent = Figure(figsize=(4, 2.8), tight_layout=True)
         self._ax_sent = self._fig_sent.add_subplot(111)
         self._canvas_sent = FigureCanvas(self._fig_sent)
@@ -642,13 +600,11 @@ class MainWindow(QMainWindow):
 
         self._charts_group.setLayout(charts_vbox)
 
-        # ---- Верхняя строка окна ----
         top_row = QHBoxLayout()
         top_row.setContentsMargins(0, 0, 0, 0)
         top_row.addWidget(self._filters_group)
         top_row.addWidget(self._charts_group, 1)
 
-        # --- Кнопка "Развернуть" над отзывами ---
         self._expand_btn = QPushButton("Развернуть список отзывов")
         self._expand_btn.setFixedHeight(28)
         self._expand_btn.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
@@ -667,7 +623,6 @@ class MainWindow(QMainWindow):
         self._expand_btn.setStyleSheet(self._expand_style_collapsed)
         self._expanded = False
 
-        # ---- Основной вертикальный лэйаут ----
         central = QWidget()
         cl = QVBoxLayout(central)
         cl.setContentsMargins(6, 6, 6, 6)
@@ -677,7 +632,6 @@ class MainWindow(QMainWindow):
         cl.addWidget(self.table, 1)
         self.setCentralWidget(central)
 
-        # Сигналы
         apply_btn.clicked.connect(self.apply_filters)
         clear_btn.clicked.connect(self.clear_filters)
         export_csv_btn.clicked.connect(self.export_filtered_csv)
@@ -687,12 +641,10 @@ class MainWindow(QMainWindow):
         self._expand_btn.clicked.connect(self._toggle_expand_reviews)
         self._csv_toggle_btn.clicked.connect(self._on_toggle_csv)
 
-        # Поля состояния пайплайна
         self._running = False
         self._scraper_procs: List[Tuple[str, QProcess]] = []
         self._scrapers_done = 0
 
-        # Пути к скриптам (полный сбор)
         self.SCRAPER_SCRIPTS: List[Tuple[str, Path]] = [
             ("Google Maps", Path("Parsers/gmaps_reviews.py")),
             ("Yandex Maps", Path("Parsers/yamaps_reviews.py")),
@@ -704,26 +656,21 @@ class MainWindow(QMainWindow):
             ("Merge Summary", Path("Csv/Summary/merged_summary.py")),
         ]
 
-        # Инкрементальный сбор — скрипты обнаруживаются динамически
         self.INCR_MERGE_SCRIPTS: List[Tuple[str, Path]] = [
             ("Merge NEW Reviews", Path("Csv/Reviews/NewReviews/merged_new_reviews.py")),
             ("Merge NEW Summary", Path("Csv/Summary/NewSummary/merged_new_summary.py")),
             ("Add Sentiment", Path("DataAnalytics/add_sentiment.py")),
         ]
 
-        # Данные
         if df is not None:
             self.set_dataframe(df)
         else:
             self.autoload_csv()
 
-        # начальная подгонка ширины фильтров
         self._adjust_filters_width()
 
-    # ---------- УВЕДОМЛЕНИЯ И СРАВНЕНИЕ СВОДОК (plyer only) ----------
     def _notify(self, title: str, message: str):
         """Уведомление: plyer → QSystemTrayIcon → QMessageBox → лог."""
-        # 1) Пытаемся через plyer
         try:
             if plyer_notification is not None:
                 plyer_notification.notify(title=title, message=message, timeout=10)
@@ -731,7 +678,6 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
 
-        # 3) Фолбэк: окно + статус-бар + лог
         try:
             QMessageBox.information(self, title, message)
         except Exception:
@@ -771,7 +717,6 @@ class MainWindow(QMainWindow):
         except Exception:
             return None
 
-    # ======== ДОБАВЛЕНО: считаем новые отзывы по строкам all_new_since.csv ========
     def _count_new_since(self) -> Dict[Tuple[str, str], int]:
         """
         Возвращает словарь {(platform, organization): count} по строкам из
@@ -803,7 +748,6 @@ class MainWindow(QMainWindow):
                 out[key] = cnt
         return out
 
-    # ======== ЗАМЕНЕНО: уведомления используют _count_new_since() ========
     def _send_incremental_notifications(self):
         """
         Уведомления после инкрементального слияния:
@@ -811,10 +755,8 @@ class MainWindow(QMainWindow):
         - изменения рейтинга определяем по разнице all_new_summary.csv vs all_summary.csv;
         - после сравнения перезаписываем all_summary.csv содержимым all_new_summary.csv.
         """
-        # 1) Считаем новые отзывы по строкам all_new_since.csv
-        since_counts = self._count_new_since()  # {(platform, org): count}
+        since_counts = self._count_new_since()
 
-        # 2) Загружаем сводки для сравнения рейтингов
         new_path = Path("Csv/Summary/NewSummary/all_new_summary.csv")
         old_path = Path("Csv/Summary/all_summary.csv")
 
@@ -835,7 +777,6 @@ class MainWindow(QMainWindow):
                 except Exception as e:
                     self._append_log(f"[NOTIFY] Ошибка чтения all_summary.csv: {e}")
 
-        # 3) Построим карту старых и новых рейтингов
         rating_changes: Dict[Tuple[str, str], Tuple[Optional[float], Optional[float]]] = {}
         if new_df is not None:
             plat_col = self._find_col(new_df, ["platform", "Платформа"]) or "platform"
@@ -860,7 +801,6 @@ class MainWindow(QMainWindow):
                     old_rating = old_map.get(key)
                     rating_changes[key] = (old_rating, new_rating)
 
-        # 4) Обновляем all_summary.csv из all_new_summary.csv (даже если old отсутствовал)
         if new_df is not None:
             try:
                 new_df.to_csv(old_path, index=False)
@@ -868,7 +808,6 @@ class MainWindow(QMainWindow):
             except Exception as e:
                 self._append_log(f"[NOTIFY] Не удалось обновить all_summary.csv: {e}")
 
-        # 5) Сводим ключи: там, где есть новые отзывы ИЛИ есть изменение рейтинга
         all_keys = set(since_counts.keys()) | set(rating_changes.keys())
 
         changes: List[Tuple[str, str, Dict[str, Any]]] = []
@@ -881,7 +820,7 @@ class MainWindow(QMainWindow):
             if old_rating is not None and new_rating is not None:
                 rating_changed = abs(new_rating - old_rating) >= 0.01
             elif new_rating is not None and old_rating is None:
-                rating_changed = True  # новая пара
+                rating_changed = True
 
             if delta_count > 0 or rating_changed:
                 changes.append((p, o, {
@@ -890,7 +829,6 @@ class MainWindow(QMainWindow):
                     "new_rating": new_rating
                 }))
 
-        # 6) Отправляем уведомления
         if not changes:
             self._notify("Нет изменений", "Новые комментарии и рейтинг без изменений.")
             return
@@ -904,31 +842,27 @@ class MainWindow(QMainWindow):
                     parts.append(f"+{d['delta_count']} комм.")
                 if d.get("old_rating") is not None and d.get("new_rating") is not None:
                     if abs(d["new_rating"] - d["old_rating"]) >= 0.01:
-                        parts.append(f"рейтинг {d['old_rating']:.2f} → {d['new_rating']:.2f}")
+                        parts.append(f"рейтинг {d['old_rating']:.2f} -> {d['new_rating']:.2f}")
                 self._append_log(f"[CHANGE] {p} — {o}: " + (", ".join(parts) if parts else "изменение"))
             return
 
         for p, o, d in changes:
             if d.get("delta_count"):
-                # Количество новых берём из all_new_since.csv (по строкам)
                 self._notify("Новые комментарии", f"{p} — {o}: +{d['delta_count']}")
             if d.get("old_rating") is not None and d.get("new_rating") is not None:
                 if abs(d["new_rating"] - d["old_rating"]) >= 0.01:
-                    self._notify("Изменение рейтинга", f"{p} — {o}: {d['old_rating']:.2f} → {d['new_rating']:.2f}")
+                    self._notify("Изменение рейтинга", f"{p} — {o}: {d['old_rating']:.2f} -> {d['new_rating']:.2f}")
 
-    # ---------- Сервис: ширина группы фильтров ----------
     def _adjust_filters_width(self):
         cw = self.centralWidget().width() if self.centralWidget() else self.width()
         target = max(self.FILTERS_MIN_W, int(cw * self.FILTERS_WIDTH_RATIO))
         target = min(target, max(self.FILTERS_MIN_W, cw - 40))
         self._filters_group.setFixedWidth(target)
 
-    # ---- Автозагрузка текущего CSV по режиму ----
     def autoload_csv(self):
         target = self._csv_paths.get(self._csv_mode, Path("Csv/Reviews/all_reviews.csv"))
         self.load_csv(target)
 
-    # ---- Универсальная загрузка CSV ----
     def load_csv(self, csv_path: Path):
         self._current_csv_path = csv_path
         if not csv_path.exists():
@@ -956,12 +890,10 @@ class MainWindow(QMainWindow):
         finally:
             self._update_csv_label()
 
-    # ---- Обработчик "Переключить" ----
     def _on_toggle_csv(self):
         self._csv_mode = "summary" if self._csv_mode == "reviews" else "reviews"
         self.autoload_csv()
 
-    # ---- Обновление метки текущего набора (Отзывы/Сводка) ----
     def _update_csv_label(self):
         self._csv_current_label.setText("Отзывы" if self._csv_mode == "reviews" else "Сводка")
         path = self._csv_paths.get(self._csv_mode)
@@ -969,7 +901,6 @@ class MainWindow(QMainWindow):
             self._csv_current_label.setToolTip(str(path))
             self._csv_toggle_btn.setToolTip(f"Переключить. Текущий файл: {path}")
 
-    # ---- Работа с данными ----
     def set_dataframe(self, df: pd.DataFrame):
         self._model = DataFrameModel(df)
         self._proxy = ReviewFilterProxyModel(self._model)
@@ -999,7 +930,6 @@ class MainWindow(QMainWindow):
 
         self._model.dataChanged.connect(self._on_source_data_changed)
 
-        # Заполнение значений фильтров (включая need_answer: «Все» только если колонки нет)
         self._populate_filter_values(df)
 
         self._apply_column_layout()
@@ -1019,7 +949,6 @@ class MainWindow(QMainWindow):
         fill_combo(self._org_combo, "organization")
         fill_combo(self._sentiment_combo, ["sentiment", "sentiment_label", "tone", "Тональность"])
 
-        # need_answer — особая логика: если колонки нет, оставляем только «— Все —»
         self._need_answer_combo.blockSignals(True)
         self._need_answer_combo.clear()
         self._need_answer_combo.addItem("— Все —")
@@ -1028,7 +957,6 @@ class MainWindow(QMainWindow):
         self._need_answer_combo.setCurrentIndex(0)
         self._need_answer_combo.blockSignals(False)
 
-    # ---- Фильтры ----
     def _spin_value_or_none(self, sp: QSpinBox) -> Optional[float]:
         v = sp.value()
         return None if v == 0 and sp.specialValueText() == "—" else float(v)
@@ -1069,7 +997,6 @@ class MainWindow(QMainWindow):
         self._date_to.setDate(self._date_to.minimumDate())
         self.apply_filters()
 
-    # ---- Текущая выборка и сводка/диаграммы ----
     def _current_filtered_dataframe(self) -> Optional[pd.DataFrame]:
         if not self._proxy:
             return None
@@ -1160,11 +1087,9 @@ class MainWindow(QMainWindow):
                                ha="center", va="center", transform=self._ax_sent.transAxes)
         self._canvas_sent.draw()
 
-    # ---- Имя базового файла экспорта ----
     def _export_basename(self) -> str:
         return "filtered_reviews" if self._csv_mode == "reviews" else "filtered_summary"
 
-    # ---- Экспорт в CSV ----
     def export_filtered_csv(self):
         if not self._proxy:
             return
@@ -1180,7 +1105,6 @@ class MainWindow(QMainWindow):
         except Exception as e:
             QMessageBox.critical(self, "Ошибка экспорта CSV", str(e))
 
-    # ---- Экспорт в JSON ----
     def export_filtered_json(self):
         if not self._proxy:
             return
@@ -1188,7 +1112,6 @@ class MainWindow(QMainWindow):
         if out_df is None:
             return
 
-        # приводим NaN к None, чтобы корректно сериализовалось в JSON
         df_clean = out_df.where(pd.notna(out_df), None)
 
         out_path = Path(f"{self._export_basename()}.json")
@@ -1200,11 +1123,9 @@ class MainWindow(QMainWindow):
         except Exception as e:
             QMessageBox.critical(self, "Ошибка экспорта JSON", str(e))
 
-    # ==================== ПАЙПЛАЙН СБОРА ДАННЫХ ====================
     def _append_log(self, text: str):
         self._log.appendPlainText(text.rstrip())
 
-    # ---------- Полный сбор ----------
     def run_full_pipeline(self, ask_confirm: bool = True):
         if self._running:
             QMessageBox.information(self, "Уже выполняется", "Пайплайн уже запущен.")
@@ -1220,7 +1141,6 @@ class MainWindow(QMainWindow):
         if reply != QMessageBox.StandardButton.Yes:
             return
 
-        # Проверяем именно runtime-пути (.py в dev, .exe в сборке)
         targets = [p for _, p in (self.SCRAPER_SCRIPTS + self.MERGE_SCRIPTS)]
         missing = []
         for p in targets:
@@ -1293,7 +1213,6 @@ class MainWindow(QMainWindow):
         self._append_log(f"[{name}] Завершён с кодом {code}.")
         self._run_merges_sequentially(idx + 1)
 
-    # ---------- Инкрементальный сбор ----------
     def _discover_incremental_scripts(self) -> list[tuple[str, Path]]:
         inc_dir = Path("Parsers/Incremental")
         scripts = []
@@ -1302,7 +1221,6 @@ class MainWindow(QMainWindow):
                 for p in sorted(inc_dir.glob("*.py")):
                     scripts.append((p.stem, p))
             return scripts
-        # В сборке берём *.exe из dist/Parsers/Incremental
         exe_dir = _app_dir() / "Parsers" / "Incremental"
         if exe_dir.exists():
             for p in sorted(exe_dir.glob("*.exe")):
@@ -1325,19 +1243,16 @@ class MainWindow(QMainWindow):
         if reply != QMessageBox.StandardButton.Yes:
             return
 
-        # --- ФОЛБЭК: если базовых файлов нет, запускаем полный сбор ---
         base_reviews = Path("Csv/Reviews/all_reviews.csv")
         base_summary = Path("Csv/Summary/all_summary.csv")
         if not base_reviews.exists() or not base_summary.exists():
             msg = "Базовые файлы не найдены: " + \
                   ("all_reviews.csv отсутствует; " if not base_reviews.exists() else "") + \
                   ("all_summary.csv отсутствует; " if not base_summary.exists() else "")
-            self._append_log("[INCR→FULL] " + msg + "запускаю полный сбор.")
+            self._append_log("[INCR->FULL] " + msg + "запускаю полный сбор.")
             self.statusBar().showMessage("Нет базовых файлов для инкремента. Запущен полный сбор.")
-            # Запускаем полный сбор БЕЗ повторного подтверждения
             self.run_full_pipeline(ask_confirm=False)
             return
-        # --------------------------------------------------------------
 
         incr_scrapers = self._discover_incremental_scripts()
         if not incr_scrapers:
@@ -1345,7 +1260,6 @@ class MainWindow(QMainWindow):
                                  "Не найдено ни одного инкрементального скрипта в Parsers/Incremental/*.py")
             return
 
-        # Проверяем именно runtime-пути (.py в dev, .exe в сборке)
         targets = [p for _, p in (self.SCRAPER_SCRIPTS + self.MERGE_SCRIPTS)]
         missing = []
         for p in targets:
@@ -1358,14 +1272,12 @@ class MainWindow(QMainWindow):
                                 "Отсутствуют файлы:\n" + "\n".join(missing))
             return
 
-        # Стартуем инкрементальные парсеры параллельно
         self._running = True
         self._scrapers_done = 0
         self._scraper_procs.clear()
         self._append_log("=== Инкрементальные парсеры (параллельно) ===")
 
-        # сохраним список текущих инкрементальных для колбэков
-        self._incr_scrapers_cache = incr_scrapers  # type: ignore[attr-defined]
+        self._incr_scrapers_cache = incr_scrapers
 
         for name, path in incr_scrapers:
             proc = QProcess(self)
@@ -1386,7 +1298,6 @@ class MainWindow(QMainWindow):
     def _on_incr_scraper_finished(self, name: str, code: int, status):
         self._append_log(f"[INCR {name}] Завершён с кодом {code}.")
         self._scrapers_done += 1
-        # Когда закончатся ВСЕ из Parsers/Incremental — запускаем объединение новых данных
         if self._scrapers_done == len(self._scraper_procs):
             self._append_log("=== Инкрементальные парсеры завершены. Запуск объединения новых данных… ===")
             self._run_incr_merges_sequentially(0)
@@ -1395,9 +1306,7 @@ class MainWindow(QMainWindow):
         if idx >= len(self.INCR_MERGE_SCRIPTS):
             self._append_log("=== Инкрементальное слияние завершено. Перезагрузка таблицы… ===")
             try:
-                # Сначала уведомления по разнице all_new_summary vs all_summary
                 self._send_incremental_notifications()
-                # Затем перезагружаем основной CSV
                 self.autoload_csv()
                 QMessageBox.information(self, "Готово", "Новые данные собраны и объединены.")
             except Exception as e:
@@ -1426,7 +1335,6 @@ class MainWindow(QMainWindow):
         self._append_log(f"[{name}] Завершён с кодом {code}.")
         self._run_incr_merges_sequentially(idx + 1)
 
-    # ---- Макет колонок ----
     def _apply_column_layout(self):
         if self._model is None:
             return
@@ -1483,7 +1391,6 @@ class MainWindow(QMainWindow):
             self._adjust_filters_width()
         self._apply_column_layout()
 
-    # ---- Автосейв при изменении need_answer ----
     def _on_source_data_changed(self, topLeft: QModelIndex, bottomRight: QModelIndex, roles: List[int] = []):
         if self._csv_mode != "reviews":
             return
