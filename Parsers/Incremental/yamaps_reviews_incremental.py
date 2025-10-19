@@ -16,6 +16,10 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.common.action_chains import ActionChains
 from selenium.common.exceptions import NoSuchWindowException, WebDriverException, TimeoutException
+# --- добавлено для защиты от протухших элементов ---
+from selenium.common.exceptions import StaleElementReferenceException, JavascriptException
+import time
+# ---------------------------------------------------
 
 from typing import Optional, Dict
 
@@ -262,7 +266,7 @@ def extract_summary(driver):
                 txt = (el.text or "").replace("\xa0", " ").strip()
                 m = re.search(r"отзыв[а-я]*[^0-9]*([\d\s]+)", txt, flags=re.I)
                 if not m:
-                    m = re.search(r"Отзывы[^0-9]*([\d\s]+)", txt, flags=re.I)
+                    m = re.search(r"Отзывы[^0-9]*([\д\s]+)", txt, flags=re.I)
                 if m:
                     try:
                         reviews_count = int(m.group(1).replace(" ", ""))
@@ -296,9 +300,9 @@ def extract_summary(driver):
     if reviews_count is None:
         m = re.search(r'>\s*([\d\s]+)\s+отзыв(?:ов|а)?\s*<', html, re.I)
         if not m:
-            m = re.search(r'Отзывы[^0-9]{0,12}([\d\s]+)<', html, re.I)
+            m = re.search(r'Отзывы[^0-9]{0,12}([\д\s]+)<', html, re.I)
         if not m:
-            m = re.search(r'data-qa="reviews-count"[^>]*>\s*([\d\s]+)\s*<', html, re.I)
+            m = re.search(r'data-qa="reviews-count"[^>]*>\s*([\д\s]+)\s*<', html, re.I)
         if m:
             try:
                 reviews_count = int(m.group(1).replace("\u202f", "").replace(" ", ""))
@@ -423,23 +427,40 @@ def set_sort_newest_yamaps(driver, attempts: int = 3) -> bool:
 
 
 def get_scroll_container(driver):
+    """
+    ИСПРАВЛЕНО: больше не передаём Python-элемент в execute_script.
+    Контейнер находится полностью на стороне JS; добавлен ретрай,
+    чтобы переживать перерисовку DOM и избежать StaleElementReferenceException.
+    """
     WebDriverWait(driver, WAIT_TIMEOUT).until(
         EC.presence_of_element_located((By.CSS_SELECTOR, "div.business-review-view"))
     )
-    first_review = driver.find_element(By.CSS_SELECTOR, "div.business-review-view")
-    return driver.execute_script("""
-        var el = arguments[0];
+    js = """
+        const first = document.querySelector('div.business-review-view');
         function isScrollable(e){
             if(!e) return false;
-            var s = getComputedStyle(e);
+            const s = getComputedStyle(e);
             return /(auto|scroll)/.test(s.overflowY);
         }
+        let el = first;
         while (el){
             if (isScrollable(el)) return el;
             el = el.parentElement;
         }
         return document.scrollingElement || document.body;
-    """, first_review)
+    """
+    last_exc = None
+    for _ in range(6):
+        try:
+            el = driver.execute_script(js)
+            if el:
+                return el
+        except (StaleElementReferenceException, JavascriptException) as e:
+            last_exc = e
+            time.sleep(0.2)
+    if last_exc:
+        raise last_exc
+    return driver.execute_script("return document.scrollingElement || document.body;")
 
 
 def autoscroll_burst(driver, container, ms: int):
@@ -467,6 +488,16 @@ def autoscroll_burst(driver, container, ms: int):
         """, container, ms)
     except Exception:
         pass
+
+
+def _container_alive(driver, container) -> bool:
+    """Проверка, что контейнер ещё в DOM; если протух — будет исключение."""
+    try:
+        return bool(driver.execute_script("return arguments[0] && arguments[0].isConnected === true;", container))
+    except (StaleElementReferenceException, JavascriptException):
+        return False
+    except Exception:
+        return False
 
 
 def expand_all_visible(driver, scope=None):
@@ -676,6 +707,17 @@ def main():
             for _ in range(BURSTS):
                 if stop:
                     break
+                # --- проверка/восстановление контейнера перед скроллом ---
+                if not _container_alive(driver, container):
+                    try:
+                        container = get_scroll_container(driver)
+                    except Exception:
+                        # если совсем плохо — используем документ
+                        try:
+                            container = driver.execute_script("return document.scrollingElement || document.body;")
+                        except Exception:
+                            pass
+                # ---------------------------------------------------------
                 prev_len = len(batch)
                 autoscroll_burst(driver, container, BURST_MS)
                 expand_all_visible(driver)

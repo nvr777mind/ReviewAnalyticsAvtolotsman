@@ -16,6 +16,10 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.common.action_chains import ActionChains
 from selenium.common.exceptions import NoSuchWindowException, WebDriverException, TimeoutException
+# --- добавлено для фикса ---
+from selenium.common.exceptions import StaleElementReferenceException, JavascriptException
+import time
+# --- конец добавлений ---
 
 import os, sys, platform
 from pathlib import Path
@@ -182,7 +186,7 @@ def extract_summary(driver):
         if not m:
             m = re.search(r'Отзывы[^0-9]{0,12}([\d\s]+)<', html, re.I)
         if not m:
-            m = re.search(r'data-qa="reviews-count"[^>]*>\s*([\d\s]+)\s*<', html, re.I)
+            m = re.search(r'data-qa="reviews-count"[^>]*>\s*([\д\s]+)\s*<', html, re.I)
         if m:
             try:
                 reviews_count = int(m.group(1).replace("\u202f", "").replace(" ", ""))
@@ -266,23 +270,40 @@ def safe_get(drv: webdriver.Chrome, url: str) -> bool:
         return False
 
 def get_scroll_container(driver):
+    """
+    ИСПРАВЛЕНО: больше не передаём Python-элемент в execute_script.
+    Контейнер находится целиком на стороне JS; добавлен ретрай на случай
+    динамической перерисовки DOM (устраняет StaleElementReferenceException).
+    """
     WebDriverWait(driver, WAIT_TIMEOUT).until(
         EC.presence_of_element_located((By.CSS_SELECTOR, "div.business-review-view"))
     )
-    first_review = driver.find_element(By.CSS_SELECTOR, "div.business-review-view")
-    return driver.execute_script("""
-        var el = arguments[0];
+    js = """
+        const first = document.querySelector('div.business-review-view');
         function isScrollable(e){
             if(!e) return false;
-            var s = getComputedStyle(e);
+            const s = getComputedStyle(e);
             return /(auto|scroll)/.test(s.overflowY);
         }
+        let el = first;
         while (el){
             if (isScrollable(el)) return el;
             el = el.parentElement;
         }
         return document.scrollingElement || document.body;
-    """, first_review)
+    """
+    last_exc = None
+    for _ in range(6):
+        try:
+            const_el = driver.execute_script(js)
+            if const_el: 
+                return const_el
+        except (StaleElementReferenceException, JavascriptException) as e:
+            last_exc = e
+            time.sleep(0.2)
+    if last_exc:
+        raise last_exc
+    return driver.execute_script("return document.scrollingElement || document.body;")
 
 def inject_perf_css(driver):
     try:
