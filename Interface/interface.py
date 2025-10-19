@@ -260,7 +260,7 @@ class ReviewFilterProxyModel(QSortFilterProxyModel):
         if not s:
             return None
         s = s.strip()
-        for fmt in ("%Y-%m-%d", "%Y.%m.%d", "%d.%m.%Y"):
+        for fmt in ("%Y-%m-%d", "%Y.%m.%d", "%d.%м.%Y"):
             try:
                 return datetime.strptime(s, fmt)
             except Exception:
@@ -644,6 +644,8 @@ class MainWindow(QMainWindow):
         self._running = False
         self._scraper_procs: List[Tuple[str, QProcess]] = []
         self._scrapers_done = 0
+        self._current_proc: Optional[QProcess] = None
+        self._incr_scrapers_cache: List[Tuple[str, Path]] = []
 
         self.SCRAPER_SCRIPTS: List[Tuple[str, Path]] = [
             ("Google Maps", Path("Parsers/gmaps_reviews.py")),
@@ -1154,32 +1156,35 @@ class MainWindow(QMainWindow):
             return
 
         self._running = True
-        self._scrapers_done = 0
-        self._scraper_procs.clear()
-        self._append_log("=== Старт парсеров (параллельно) ===")
+        self._append_log("=== Старт парсеров (последовательно) ===")
+        self._run_scrapers_sequentially(0)
 
-        for name, path in self.SCRAPER_SCRIPTS:
-            proc = QProcess(self)
-            program, args = _script_cmd(path)
-            proc.setProgram(program)
-            proc.setArguments(args)
-            proc.setWorkingDirectory(str(_app_dir()))
-            proc.readyReadStandardOutput.connect(
-                lambda p=proc, n=name: self._append_log(f"[{n}] {bytes(p.readAllStandardOutput()).decode('utf-8', errors='replace')}")
-            )
-            proc.readyReadStandardError.connect(
-                lambda p=proc, n=name: self._append_log(f"[{n} ERR] {bytes(p.readAllStandardError()).decode('utf-8', errors='replace')}")
-            )
-            proc.finished.connect(lambda code, status, n=name, p=proc: self._on_scraper_finished(n, code, status))
-            self._scraper_procs.append((name, proc))
-            proc.start()
-
-    def _on_scraper_finished(self, name: str, code: int, status):
-        self._append_log(f"[{name}] Завершён с кодом {code}.")
-        self._scrapers_done += 1
-        if self._scrapers_done == len(self.SCRAPER_SCRIPTS):
+    def _run_scrapers_sequentially(self, idx: int):
+        if idx >= len(self.SCRAPER_SCRIPTS):
             self._append_log("=== Все парсеры завершены. Запуск слияния… ===")
             self._run_merges_sequentially(0)
+            return
+
+        name, path = self.SCRAPER_SCRIPTS[idx]
+        self._append_log(f"[{name}] Запуск {path}…")
+        proc = QProcess(self)
+        program, args = _script_cmd(path)
+        proc.setProgram(program)
+        proc.setArguments(args)
+        proc.setWorkingDirectory(str(_app_dir()))
+        proc.readyReadStandardOutput.connect(
+            lambda p=proc, n=name: self._append_log(f"[{n}] {bytes(p.readAllStandardOutput()).decode('utf-8', errors='replace')}")
+        )
+        proc.readyReadStandardError.connect(
+            lambda p=proc, n=name: self._append_log(f"[{n} ERR] {bytes(p.readAllStandardError()).decode('utf-8', errors='replace')}")
+        )
+        proc.finished.connect(lambda code, status, i=idx, n=name: self._on_scraper_finished_seq(code, status, i, n))
+        self._current_proc = proc
+        proc.start()
+
+    def _on_scraper_finished_seq(self, code: int, status, idx: int, name: str):
+        self._append_log(f"[{name}] Завершён с кодом {code}.")
+        self._run_scrapers_sequentially(idx + 1)
 
     def _run_merges_sequentially(self, idx: int):
         if idx >= len(self.MERGE_SCRIPTS):
@@ -1227,7 +1232,6 @@ class MainWindow(QMainWindow):
                 scripts.append((p.stem, p))
         return scripts
 
-
     def run_incremental_pipeline(self):
         if self._running:
             QMessageBox.information(self, "Уже выполняется", "Пайплайн уже запущен.")
@@ -1273,34 +1277,37 @@ class MainWindow(QMainWindow):
             return
 
         self._running = True
-        self._scrapers_done = 0
-        self._scraper_procs.clear()
-        self._append_log("=== Инкрементальные парсеры (параллельно) ===")
-
         self._incr_scrapers_cache = incr_scrapers
+        self._append_log("=== Инкрементальные парсеры (последовательно) ===")
+        self._run_incr_scrapers_sequentially(0)
 
-        for name, path in incr_scrapers:
-            proc = QProcess(self)
-            program, args = _script_cmd(path)
-            proc.setProgram(program)
-            proc.setArguments(args)
-            proc.setWorkingDirectory(str(_app_dir()))
-            proc.readyReadStandardOutput.connect(
-                lambda p=proc, n=name: self._append_log(f"[INCR {n}] {bytes(p.readAllStandardOutput()).decode('utf-8', errors='replace')}")
-            )
-            proc.readyReadStandardError.connect(
-                lambda p=proc, n=name: self._append_log(f"[INCR {n} ERR] {bytes(p.readAllStandardError()).decode('utf-8', errors='replace')}")
-            )
-            proc.finished.connect(lambda code, status, n=name: self._on_incr_scraper_finished(n, code, status))
-            self._scraper_procs.append((name, proc))
-            proc.start()
-
-    def _on_incr_scraper_finished(self, name: str, code: int, status):
-        self._append_log(f"[INCR {name}] Завершён с кодом {code}.")
-        self._scrapers_done += 1
-        if self._scrapers_done == len(self._scraper_procs):
+    def _run_incr_scrapers_sequentially(self, idx: int):
+        if idx >= len(self._incr_scrapers_cache):
             self._append_log("=== Инкрементальные парсеры завершены. Запуск объединения новых данных… ===")
             self._run_incr_merges_sequentially(0)
+            return
+
+        name, path = self._incr_scrapers_cache[idx]
+        self._append_log(f"[INCR {name}] Запуск {path}…")
+
+        proc = QProcess(self)
+        program, args = _script_cmd(path)
+        proc.setProgram(program)
+        proc.setArguments(args)
+        proc.setWorkingDirectory(str(_app_dir()))
+        proc.readyReadStandardOutput.connect(
+            lambda p=proc, n=name: self._append_log(f"[INCR {n}] {bytes(p.readAllStandardOutput()).decode('utf-8', errors='replace')}")
+        )
+        proc.readyReadStandardError.connect(
+            lambda p=proc, n=name: self._append_log(f"[INCR {n} ERR] {bytes(p.readAllStandardError()).decode('utf-8', errors='replace')}")
+        )
+        proc.finished.connect(lambda code, status, i=idx, n=name: self._on_incr_scraper_finished_seq(code, status, i, n))
+        self._current_proc = proc
+        proc.start()
+
+    def _on_incr_scraper_finished_seq(self, code: int, status, idx: int, name: str):
+        self._append_log(f"[INCR {name}] Завершён с кодом {code}.")
+        self._run_incr_scrapers_sequentially(idx + 1)
 
     def _run_incr_merges_sequentially(self, idx: int):
         if idx >= len(self.INCR_MERGE_SCRIPTS):
