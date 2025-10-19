@@ -426,32 +426,20 @@ def get_scroll_container(driver):
     WebDriverWait(driver, WAIT_TIMEOUT).until(
         EC.presence_of_element_located((By.CSS_SELECTOR, "div.business-review-view"))
     )
-    js = """
-    (function(){
-      // сперва явные селекторы
-      const sels = [
-        "div.business-reviews-card-view__scroll",
-        "div.card-section-view__scroll",
-        "section.business-reviews-card-view__reviews",
-        "div.business-review-view"
-      ];
-      for (const s of sels){
-        const el = document.querySelector(s);
-        if (el){
-          const st = getComputedStyle(el);
-          if (el.scrollHeight > el.clientHeight ||
-              /(auto|scroll)/.test(st.overflowY)) return el;
+    first_review = driver.find_element(By.CSS_SELECTOR, "div.business-review-view")
+    return driver.execute_script("""
+        var el = arguments[0];
+        function isScrollable(e){
+            if(!e) return false;
+            var s = getComputedStyle(e);
+            return /(auto|scroll)/.test(s.overflowY);
         }
-      }
-      // эвристика: самый «прокручиваемый» контейнер
-      const cands = Array.from(document.querySelectorAll("div,section")).filter(e=>{
-        const st = getComputedStyle(e);
-        return (e.scrollHeight > e.clientHeight) && /(auto|scroll)/.test(st.overflowY);
-      }).sort((a,b)=>(b.scrollHeight-b.clientHeight)-(a.scrollHeight-a.clientHeight));
-      return cands[0] || document.scrollingElement || document.body;
-    })();
-    """
-    return driver.execute_script(js)
+        while (el){
+            if (isScrollable(el)) return el;
+            el = el.parentElement;
+        }
+        return document.scrollingElement || document.body;
+    """, first_review)
 
 
 def autoscroll_burst(driver, container, ms: int):
