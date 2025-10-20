@@ -29,7 +29,7 @@ jobs:
           # Гарантируем наличие крупных пакетов в окружении сборки
           pip install PyQt6 pandas numpy matplotlib python-dateutil
           pip install selenium urllib3 requests beautifulsoup4 lxml
-          pip install plyer pyobjus
+          pip install plyer pyobjus pymorphy3
           # опционально:
           pip install webdriver-manager tqdm python-dotenv
           pip install pyinstaller
