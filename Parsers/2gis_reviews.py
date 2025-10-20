@@ -1,5 +1,5 @@
-import csv, re, time
-from typing import Optional, Tuple, List, Set, Dict
+import csv, re, time, tempfile, shutil, subprocess, os, sys, platform
+from typing import Optional, Tuple, List, Dict
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -13,14 +13,10 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-from selenium.common.exceptions import NoSuchWindowException, WebDriverException, TimeoutException
+from selenium.common.exceptions import (
+    NoSuchWindowException, WebDriverException, TimeoutException, SessionNotCreatedException
+)
 from selenium.webdriver.common.action_chains import ActionChains
-
-import os, sys, platform
-from pathlib import Path
-from selenium import webdriver
-from selenium.webdriver.chrome.options import Options
-from selenium.webdriver.chrome.service import Service
 
 try:
     from selenium.webdriver.common.actions.wheel_input import ScrollOrigin
@@ -35,8 +31,6 @@ if platform.system() == "Windows":
     YANDEXDRIVER_PATH = "Drivers/Windows/yandexdriver.exe"
 else:
     YANDEXDRIVER_PATH = "Drivers/MacOS/yandexdriver"
-    
-PROFILE_DIR           = str(Path.home() / ".yandex-2gis-scraper")
 
 OUT_CSV = "Csv/Reviews/2gis_reviews.csv"
 OUT_CSV_SUMMARY = "Csv/Summary/2gis_summary.csv"
@@ -67,23 +61,19 @@ def find_yandex_browser() -> Optional[Path]:
         return Path(env)
 
     if platform.system() == "Windows":
-        home_candidate = Path.home() / "AppData" / "Local" / "Yandex" / "YandexBrowser" / "Application" / "browser.exe"
-
         candidates = [
-            home_candidate,
+            Path.home() / "AppData" / "Local" / "Yandex" / "YandexBrowser" / "Application" / "browser.exe",
             Path(os.environ.get("LOCALAPPDATA", "")) / "Yandex" / "YandexBrowser" / "Application" / "browser.exe",
             Path(os.environ.get("ProgramFiles", "")) / "Yandex" / "YandexBrowser" / "Application" / "browser.exe",
             Path(os.environ.get("ProgramFiles(x86)", "")) / "Yandex" / "YandexBrowser" / "Application" / "browser.exe",
         ]
         for p in candidates:
-            if p.is_file():
+            if p and p.is_file():
                 return p
         return None
     else:
         p = Path("/Applications/Yandex.app/Contents/MacOS/Yandex")
         return p if p.is_file() else None
-
-    return None
 
 yb = find_yandex_browser()
 
@@ -104,9 +94,6 @@ MONTHS_RU = {"января":1,"февраля":2,"марта":3,"апреля":4
 RELATIVE_MAP = {"сегодня": 0, "вчера": -1}
 
 def org_from_url(url: str) -> Optional[str]:
-    """
-    Достаём firm/<id> из URL и маппим на слаг.
-    """
     m = re.search(r"/firm/(\d+)", url)
     if not m:
         return None
@@ -156,45 +143,102 @@ def parse_ru_date_to_iso(s: Optional[str]) -> Optional[str]:
 
     m2 = re.match(r"^(\d{1,2})\.(\d{1,2})\.(\d{2,4})$", s)
     if m2:
-        d, mo, y = int(m2.group(1)), int(m2.group(2)), int(m2.group(3))
+        d0, mo, y = int(m2.group(1)), int(m2.group(2)), int(m2.group(3))
         if y < 100:
             y += 2000
         try:
-            return datetime(y, mo, d).date().isoformat()
+            return datetime(y, mo, d0).date().isoformat()
         except:
             return None
 
     return None
 
-def build_options() -> Options:
+def _build_options(profile_dir: str) -> Options:
     opts = Options()
-    opts.binary_location = str(yb)
-    opts.add_argument("--start-maximized")
+    if yb:
+        opts.binary_location = str(yb)
+    opts.add_argument("--no-first-run")
+    opts.add_argument("--no-default-browser-check")
     opts.add_argument("--no-sandbox")
     opts.add_argument("--disable-dev-shm-usage")
+    opts.add_argument("--disable-gpu")
+    opts.add_argument("--disable-extensions")
     opts.add_argument("--lang=ru-RU,ru")
     opts.page_load_strategy = "eager"
-    opts.add_argument(f"--user-data-dir={PROFILE_DIR}")
-    opts.add_argument("--profile-directory=Default")
-    opts.add_experimental_option("excludeSwitches", ["enable-automation"])
+    opts.add_argument(f"--user-data-dir={profile_dir}")
+    opts.add_experimental_option("excludeSwitches", ["enable-automation", "enable-logging"])
     opts.add_experimental_option("useAutomationExtension", False)
     return opts
 
-def setup_driver() -> webdriver.Chrome:
-    if not Path(str(yb)).exists():
-        raise FileNotFoundError(f"Нет Yandex Browser: {str(yb)}")
+def _taskkill_stale_drivers():
+    if platform.system() == "Windows":
+        try:
+            subprocess.run(["taskkill", "/F", "/IM", "yandexdriver.exe"], timeout=2, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except Exception:
+            pass
+        try:
+            subprocess.run(["taskkill", "/F", "/IM", "chromedriver.exe"], timeout=2, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except Exception:
+            pass
+
+def setup_driver(headless: bool = False) -> Tuple[webdriver.Chrome, str]:
+    """
+    Создаёт драйвер с уникальным временным профилем. Возвращает (driver, profile_dir).
+    Имеет 1 ретрай на случай залочки профиля.
+    """
+    if not yb or not Path(str(yb)).exists():
+        raise FileNotFoundError(f"Яндекс.Браузер не найден: {yb}")
     if not Path(YANDEXDRIVER_PATH).is_file():
         raise FileNotFoundError(f"Нет yandexdriver: {YANDEXDRIVER_PATH}")
-    service = Service(executable_path=YANDEXDRIVER_PATH)
-    drv = webdriver.Chrome(service=service, options=build_options())
-    drv.set_page_load_timeout(120); drv.set_script_timeout(120); drv.implicitly_wait(0)
+
+    _taskkill_stale_drivers()
+
+    profile_dir = tempfile.mkdtemp(prefix="2gis_profile_")
+    last_exc = None
+
+    for attempt in range(2):
+        try:
+            service = Service(executable_path=YANDEXDRIVER_PATH)
+            options = _build_options(profile_dir)
+            if headless:
+                options.add_argument("--headless=new")
+            drv = webdriver.Chrome(service=service, options=options)
+            drv.set_page_load_timeout(120)
+            drv.set_script_timeout(120)
+            drv.implicitly_wait(0)
+            try:
+                drv.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {
+                    "source": "Object.defineProperty(navigator, 'webdriver', {get: () => undefined});"
+                })
+            except Exception:
+                pass
+            return drv, profile_dir
+        except SessionNotCreatedException as e:
+            last_exc = e
+            try:
+                shutil.rmtree(profile_dir, ignore_errors=True)
+            finally:
+                time.sleep(0.8)
+                profile_dir = tempfile.mkdtemp(prefix="2gis_profile_retry_")
+        except WebDriverException as e:
+            last_exc = e
+            break
+
+    if profile_dir and Path(profile_dir).exists():
+        shutil.rmtree(profile_dir, ignore_errors=True)
+    raise last_exc if last_exc else RuntimeError("Failed to create Chrome session")
+
+def safe_quit_driver(driver: Optional[webdriver.Chrome], profile_dir: Optional[str]):
     try:
-        drv.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {
-            "source": "Object.defineProperty(navigator, 'webdriver', {get: () => undefined});"
-        })
-    except:
+        if driver:
+            driver.quit()
+    except Exception:
         pass
-    return drv
+    if profile_dir:
+        try:
+            shutil.rmtree(profile_dir, ignore_errors=True)
+        except Exception:
+            pass
 
 def ensure_window(drv) -> bool:
     try:
@@ -548,7 +592,7 @@ def _coarse_key(author: str, text: str) -> Tuple[str, str]:
     t = re.sub(r"\s+", " ", (text or "")).strip().lower()
     return (a, t)
 
-def collect_visible_batch(driver, seen_unused: set, out: list, cutoff_date, dedupe_index: Dict[Tuple[str,str], int]) -> tuple[int, bool]:
+def collect_visible_batch(driver, _seen_unused: set, out: list, cutoff_date, dedupe_index: Dict[Tuple[str,str], int]) -> Tuple[int, bool]:
     added, met_old = 0, False
     cards = find_review_cards(driver)
     for card in cards:
@@ -610,16 +654,11 @@ def _text_to_float(s: Optional[str]) -> Optional[float]:
         return float(m.group(1).replace("\u202f", "").replace(",", "."))
     except Exception:
         return None
-    
+
 def _nz(v, zero=0):
     return v if v not in (None, "") else zero
 
 def extract_summary_2gis(driver) -> Tuple[Optional[float], Optional[int], Optional[int]]:
-    """
-    rating_avg: div._1tam240
-    ratings_count: div._1y88ofn  (например "4 оценки")
-    reviews_count: строго span._1xhlznaa, который лежит ПОД div._qvsf7z
-    """
     try:
         driver.switch_to.default_content()
     except:
@@ -662,97 +701,92 @@ def extract_summary_2gis(driver) -> Tuple[Optional[float], Optional[int], Option
 
     return rating_avg, ratings_count, reviews_count
 
-def process_one_url(url: str, forced_org: Optional[str] = None, summary_writer: Optional[csv.DictWriter] = None) -> List[Dict]:
-    driver = setup_driver()
-    try:
+def process_one_url(driver: webdriver.Chrome, url: str, forced_org: Optional[str] = None,
+                    summary_writer: Optional[csv.DictWriter] = None) -> List[Dict]:
+    if not safe_get(driver, url):
+        time.sleep(1)
         if not safe_get(driver, url):
-            driver.quit(); driver = setup_driver()
-            if not safe_get(driver, url):
-                return []
-        if not ensure_window(driver):
-            driver.quit(); return []
+            return []
+    if not ensure_window(driver):
+        return []
 
-        inject_perf_css(driver)
-        time.sleep(3)
+    inject_perf_css(driver)
+    time.sleep(3)
 
-        org = forced_org or org_from_url(url) or ""
-        if not org:
-            try:
-                org = extract_organization(driver) or ""
-            except:
-                org = ""
-
+    org = forced_org or org_from_url(url) or ""
+    if not org:
         try:
-            rating_avg, ratings_count, reviews_count = extract_summary_2gis(driver)
-            if summary_writer is not None:
-                summary_writer.writerow({
-                    "organization": org,
-                    "platform":     "2GIS",
-                    "rating_avg":   _nz(rating_avg, 0),
-                    "ratings_count":_nz(ratings_count, 0),
-                    "reviews_count":_nz(reviews_count, 0),
-                })
-        except Exception:
-            if summary_writer is not None:
-                summary_writer.writerow({
-                    "organization": org, "platform": "2GIS",
-                    "rating_avg": 0, "ratings_count": 0, "reviews_count": 0
-                })
+            org = extract_organization(driver) or ""
+        except:
+            org = ""
 
-        try: click_cookies_if_any(driver)
-        except: pass
-        try: ensure_reviews_tab(driver)
-        except: pass
+    try:
+        rating_avg, ratings_count, reviews_count = extract_summary_2gis(driver)
+        if summary_writer is not None:
+            summary_writer.writerow({
+                "organization": org,
+                "platform":     "2GIS",
+                "rating_avg":   _nz(rating_avg, 0),
+                "ratings_count":_nz(ratings_count, 0),
+                "reviews_count":_nz(reviews_count, 0),
+            })
+    except Exception:
+        if summary_writer is not None:
+            summary_writer.writerow({
+                "organization": org, "platform": "2GIS",
+                "rating_avg": 0, "ratings_count": 0, "reviews_count": 0
+            })
 
-        switch_to_reviews_iframe(driver)
+    try: click_cookies_if_any(driver)
+    except: pass
+    try: ensure_reviews_tab(driver)
+    except: pass
+
+    switch_to_reviews_iframe(driver)
+    try:
         wait_for_reviews_content(driver)
+    except TimeoutException:
+        print(f"[2GIS WARN] Timeout while waiting for reviews content. Skip url={url}")
+        return []
 
-        container = get_scroll_container(driver)
-        cutoff_date = datetime.now().date() - timedelta(days=365 * YEARS_LIMIT)
+    container = get_scroll_container(driver)
+    cutoff_date = datetime.now().date() - timedelta(days=365 * YEARS_LIMIT)
 
-        results: List[Dict] = []
-        dedupe_index: Dict[Tuple[str,str], int] = {}
+    results: List[Dict] = []
+    dedupe_index: Dict[Tuple[str,str], int] = {}
 
-        idle = 0
-        stop_by_age = False
+    idle = 0
+    stop_by_age = False
+
+    added, met_old = collect_visible_batch(driver, set(), results, cutoff_date, dedupe_index)
+    if met_old:
+        stop_by_age = True
+
+    for _ in range(BURSTS):
+        if stop_by_age:
+            break
+        prev_len = len(results)
+        prev_h = get_scroll_height(driver, container)
+
+        autoscroll_burst(driver, container, BURST_MS)
+        time.sleep(1.1)
 
         added, met_old = collect_visible_batch(driver, set(), results, cutoff_date, dedupe_index)
         if met_old:
             stop_by_age = True
 
-        for _ in range(BURSTS):
-            if stop_by_age:
-                break
-            prev_len = len(results)
-            prev_h = get_scroll_height(driver, container)
+        new_h = get_scroll_height(driver, container)
+        height_grew = new_h > prev_h + 2
 
-            autoscroll_burst(driver, container, BURST_MS)
-            time.sleep(1.1)
+        idle = 0 if (added or len(results) > prev_len or height_grew) else (idle + 1)
+        if idle >= IDLE_LIMIT:
+            break
 
-            added, met_old = collect_visible_batch(driver, set(), results, cutoff_date, dedupe_index)
-            if met_old:
-                stop_by_age = True
+    for r in results:
+        r["organization"] = org
 
-            new_h = get_scroll_height(driver, container)
-            height_grew = new_h > prev_h + 2
-
-            idle = 0 if (added or len(results) > prev_len or height_grew) else (idle + 1)
-            if idle >= IDLE_LIMIT:
-                break
-
-        for r in results:
-            r["organization"] = org
-
-        print(f"  Собрано: {len(results)} | org={org or '-'}")
-        return results
-
-    except (NoSuchWindowException, WebDriverException, TimeoutException):
-        return []
-    finally:
-        try:
-            driver.quit()
-        except:
-            pass
+    print(f"  Собрано: {len(results)} | org={org or '-'}")
+    return results
 
 def main():
     try:
@@ -766,19 +800,46 @@ def main():
 
     Path(OUT_CSV_SUMMARY).parent.mkdir(parents=True, exist_ok=True)
     f_sum = open(OUT_CSV_SUMMARY, "w", newline="", encoding="utf-8")
-    w_sum = csv.DictWriter(f_sum, fieldnames=["organization","platform","rating_avg","ratings_count","reviews_count"], quoting=csv.QUOTE_ALL)
+    w_sum = csv.DictWriter(
+        f_sum,
+        fieldnames=["organization","platform","rating_avg","ratings_count","reviews_count"],
+        quoting=csv.QUOTE_ALL
+    )
     w_sum.writeheader()
 
-    for i, url in enumerate(urls, 1):
-        org_slug = org_from_url(url) or ""
-        print(f"[{i}/{len(urls)}] {url}  -> org='{org_slug or '-'}'")
-        reviews = process_one_url(url, forced_org=org_slug, summary_writer=w_sum)
-        all_rows.extend(reviews)
-
+    driver, profile_dir = None, None
     try:
-        f_sum.close()
-    except:
-        pass
+        try:
+            driver, profile_dir = setup_driver(headless=False)
+        except SessionNotCreatedException as e:
+            print(f"[2GIS WARN] {e.__class__.__name__}: {e}. Skip this run.")
+
+            try:
+                f_sum.close()
+            except:
+                pass
+
+            Path(OUT_CSV).parent.mkdir(parents=True, exist_ok=True)
+            with open(OUT_CSV, "w", newline="", encoding="utf-8") as f:
+                fieldnames = ["rating","author","date_iso","text","platform","organization"]
+                w = csv.DictWriter(f, fieldnames=fieldnames, quoting=csv.QUOTE_ALL)
+                w.writeheader()
+
+            print(f"Готово. Всего отзывов: 0. CSV отзывов: {OUT_CSV}\nSummary: {OUT_CSV_SUMMARY}")
+            return
+
+        for i, url in enumerate(urls, 1):
+            org_slug = org_from_url(url) or ""
+            print(f"[{i}/{len(urls)}] {url}  -> org='{org_slug or '-'}'")
+            reviews = process_one_url(driver, url, forced_org=org_slug, summary_writer=w_sum)
+            all_rows.extend(reviews)
+
+    finally:
+        try:
+            f_sum.close()
+        except:
+            pass
+        safe_quit_driver(driver, profile_dir)
 
     Path(OUT_CSV).parent.mkdir(parents=True, exist_ok=True)
     with open(OUT_CSV, "w", newline="", encoding="utf-8") as f:
@@ -794,7 +855,9 @@ def main():
                 "platform":     "2GIS",
                 "organization": (r.get("organization") or "").strip(),
             })
+
     print(f"Готово. Всего отзывов: {len(all_rows)}. CSV отзывов: {OUT_CSV}\nSummary: {OUT_CSV_SUMMARY}")
+
 
 if __name__ == "__main__":
     main()
