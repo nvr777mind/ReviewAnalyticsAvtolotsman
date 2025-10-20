@@ -648,8 +648,8 @@ class MainWindow(QMainWindow):
         self._incr_scrapers_cache: List[Tuple[str, Path]] = []
 
         self.SCRAPER_SCRIPTS: List[Tuple[str, Path]] = [
-            ("Google Maps", Path("Parsers/gmaps_reviews.py")),
             ("Yandex Maps", Path("Parsers/yamaps_reviews.py")),
+            ("Google Maps", Path("Parsers/gmaps_reviews.py")),
             ("2GIS", Path("Parsers/2gis_reviews.py")),
         ]
         self.MERGE_SCRIPTS: List[Tuple[str, Path]] = [
