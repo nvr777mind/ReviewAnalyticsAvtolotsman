@@ -1,4 +1,5 @@
 import csv, sys, re, math
+import pymorphy3 as pymorphy
 from pathlib import Path
 from collections import Counter
 
@@ -7,7 +8,6 @@ TEXT_COL = "text"
 SENT_COL = "sentiment"
 RATING_COL = "rating"
 
-import pymorphy3 as pymorphy
 _morph = pymorphy.MorphAnalyzer()
 
 def lemma(tok: str) -> str:
@@ -301,7 +301,7 @@ def process_csv(path: Path):
         w.writeheader()
         w.writerows(rows)
 
-    print(f"✓ обновлён: {path}  ({len(rows)} строк)  "
+    print(f"Обновлён: {path}  ({len(rows)} строк)  "
           f"{'(RuSentiLex: локальный)' if RU_SENTI else '(встроенный словарь)'}  "
           f"{'(NB: обучен)' if nb.ready() else '(NB: мало данных — использована лексика)'}")
 
