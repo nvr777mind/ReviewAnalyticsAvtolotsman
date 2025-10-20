@@ -1,4 +1,4 @@
-name: build-macos-app
+name: build-windows-exe
 
 on:
   workflow_dispatch: {}
@@ -6,98 +6,113 @@ on:
     branches: [ main ]
 
 jobs:
-  build-arm64:
-    runs-on: macos-14   # Apple Silicon runner
+  build:
+    runs-on: windows-latest
 
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-python@v5
         with:
-          python-version: '3.11'   # стабильнее для PyQt6/arm64
+          python-version: '3.9.6'
 
-      - name: Cache pip
-        uses: actions/cache@v4
+      - uses: actions/cache@v4
         with:
-          path: ~/Library/Caches/pip
-          key: ${{ runner.os }}-py311-pip-${{ hashFiles('**/requirements.txt') }}
-          restore-keys: ${{ runner.os }}-py311-pip-
+          path: ~\AppData\Local\pip\Cache
+          key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
+          restore-keys: ${{ runner.os }}-pip-
 
-      - name: Install deps (pin PyQt6/Qt6 6.5.x LTS)
+      - name: Install deps
+        shell: powershell
         run: |
           python -m pip install --upgrade pip setuptools wheel
-          
+          # Гарантируем наличие крупных пакетов в окружении сборки
           pip install PyQt6 pandas numpy matplotlib python-dateutil
           pip install selenium urllib3 requests beautifulsoup4 lxml
           pip install plyer pyobjus
           # опционально:
           pip install webdriver-manager tqdm python-dotenv
-          # для сборки приложений:
           pip install pyinstaller
-
+          echo "---- pip freeze ----"
           pip freeze
 
-      - name: Create runtime hook (Qt safe layer)
+      # 1) GUI
+      - name: Build GUI
+        shell: powershell
         run: |
-          mkdir -p hooks
-          cat > hooks/qt_macos_layer.py << 'PY'
-          import os
-          # Устраняет падения рендера на части конфигураций macOS/ARM
-          os.environ.setdefault("QT_MAC_WANTS_LAYER", "1")
-          PY
+          pyinstaller Interface/interface.py `
+            --noconfirm --onefile --windowed --name ReviewAnalytics `
+            --collect-submodules PyQt6 --collect-data PyQt6 `
+            --collect-data matplotlib `
+            --collect-all pandas `
+            --collect-all numpy `
+            --hidden-import PyQt6.QtCore --hidden-import PyQt6.QtGui --hidden-import PyQt6.QtWidgets `
+            --hidden-import matplotlib.backends.backend_qtagg `
+            --add-data "Csv;Csv" --add-data "Lexicons;Lexicons" --add-data "Urls;Urls" --add-data "DataAnalytics;DataAnalytics"
 
-      - name: Build GUI (.app, clean)
+      # 2) Парсеры (exe с именами как у .py) + разложить по папкам
+      - name: Build parsers and place into Parsers/
+        shell: powershell
         run: |
-          set -e
-          pyinstaller \
-            --noconfirm --clean --windowed --onedir \
-            --name ReviewAnalytics \
-            --collect-submodules PyQt6 \
-            --collect-all pandas \
-            --collect-all numpy \
-            --collect-data matplotlib \
-            --hidden-import PyQt6.QtCore \
-            --hidden-import PyQt6.QtGui \
-            --hidden-import PyQt6.QtWidgets \
-            --hidden-import matplotlib.backends.backend_qtagg \
-            --exclude-module PyQt6.QtBluetooth \
-            --runtime-hook hooks/qt_macos_layer.py \
-            --add-data "Csv:Csv" \
-            --add-data "Lexicons:Lexicons" \
-            --add-data "Urls:Urls" \
-            --add-data "DataAnalytics:DataAnalytics" \
-            Interface/interface.py
-          file "dist/ReviewAnalytics.app/Contents/MacOS/ReviewAnalytics"
-          uname -m
+          New-Item -ItemType Directory -Force -Path dist\Parsers | Out-Null
+          if (Test-Path "Parsers\gmaps_reviews.py")  { pyinstaller Parsers/gmaps_reviews.py  --noconfirm --onefile --name gmaps_reviews  ; Move-Item dist\gmaps_reviews.exe  dist\Parsers\gmaps_reviews.exe -Force }
+          if (Test-Path "Parsers\yamaps_reviews.py") { pyinstaller Parsers/yamaps_reviews.py --noconfirm --onefile --name yamaps_reviews ; Move-Item dist\yamaps_reviews.exe dist\Parsers\yamaps_reviews.exe -Force }
+          if (Test-Path "Parsers\2gis_reviews.py")   { pyinstaller Parsers/2gis_reviews.py   --noconfirm --onefile --name 2gis_reviews   ; Move-Item dist\2gis_reviews.exe   dist\Parsers\2gis_reviews.exe   -Force }
 
-      - name: Prepare bundle tree (parsers/data/drivers)
+      # 3) Merge/Analytics (разложим по исходной структуре)
+      - name: Build merge & analytics and place into tree
+        shell: powershell
         run: |
-          OUT="dist/ReviewAnalytics-bundle-arm64"
-          mkdir -p "$OUT/Parsers/Incremental" "$OUT/Csv/Reviews/NewReviews" "$OUT/Csv/Summary/NewSummary" "$OUT/DataAnalytics" "$OUT/drivers/MacOS"
-          cp -R Parsers/*.py "$OUT/Parsers/" 2>/dev/null || true
-          cp -R Parsers/Incremental/*.py "$OUT/Parsers/Incremental/" 2>/dev/null || true
-          cp -R Csv/Reviews/merged_reviews.py "$OUT/Csv/Reviews/" 2>/dev/null || true
-          cp -R Csv/Reviews/NewReviews/merged_new_reviews.py "$OUT/Csv/Reviews/NewReviews/" 2>/dev/null || true
-          cp -R Csv/Summary/merged_summary.py "$OUT/Csv/Summary/" 2>/dev/null || true
-          cp -R Csv/Summary/NewSummary/merged_new_summary.py "$OUT/Csv/Summary/NewSummary/" 2>/dev/null || true
-          cp -R DataAnalytics/add_sentiment.py "$OUT/DataAnalytics/" 2>/dev/null || true
-          [ -d Urls ] && cp -R Urls "$OUT/Urls"
-          [ -d Lexicons ] && cp -R Lexicons "$OUT/Lexicons"
-          if [ -d Drivers/MacOS ]; then
-            cp -R Drivers/MacOS/* "$OUT/drivers/MacOS/"
-            chmod +x "$OUT"/drivers/MacOS/* || true
-          fi
-          # Снимем карантин в артефакте (удобно для локального запуска)
-          xattr -dr com.apple.quarantine dist/ReviewAnalytics.app || true
+          New-Item -ItemType Directory -Force -Path dist\Csv\Reviews, dist\Csv\Summary, dist\DataAnalytics, dist\Csv\Reviews\NewReviews, dist\Csv\Summary\NewSummary | Out-Null
+          if (Test-Path "Csv\Reviews\merged_reviews.py")                { pyinstaller Csv/Reviews/merged_reviews.py                --noconfirm --onefile --name merged_reviews      ; Move-Item dist\merged_reviews.exe      dist\Csv\Reviews\merged_reviews.exe                 -Force }
+          if (Test-Path "DataAnalytics\add_sentiment.py")               { pyinstaller DataAnalytics/add_sentiment.py               --noconfirm --onefile --name add_sentiment       ; Move-Item dist\add_sentiment.exe       dist\DataAnalytics\add_sentiment.exe                -Force }
+          if (Test-Path "Csv\Summary\merged_summary.py")                { pyinstaller Csv/Summary/merged_summary.py                --noconfirm --onefile --name merged_summary      ; Move-Item dist\merged_summary.exe      dist\Csv\Summary\merged_summary.exe                -Force }
+          if (Test-Path "Csv\Reviews\NewReviews\merged_new_reviews.py") { pyinstaller Csv/Reviews/NewReviews/merged_new_reviews.py --noconfirm --onefile --name merged_new_reviews  ; Move-Item dist\merged_new_reviews.exe  dist\Csv\Reviews\NewReviews\merged_new_reviews.exe -Force }
+          if (Test-Path "Csv\Summary\NewSummary\merged_new_summary.py") { pyinstaller Csv/Summary/NewSummary/merged_new_summary.py --noconfirm --onefile --name merged_new_summary  ; Move-Item dist\merged_new_summary.exe  dist\Csv\Summary\NewSummary\merged_new_summary.exe -Force }
 
-      - name: Ad-hoc codesign (optional)
+      # 4) Инкрементальные парсеры: имя как у .py и папка Parsers/Incremental
+      - name: Build incremental parsers and place into Parsers/Incremental
+        shell: powershell
         run: |
-          codesign --force --deep --sign - "dist/ReviewAnalytics.app" || true
+          $inc = "Parsers\Incremental"
+          if (Test-Path $inc) {
+            New-Item -ItemType Directory -Force -Path dist\Parsers\Incremental | Out-Null
+            $files = Get-ChildItem -Path $inc -Filter "*.py"
+            foreach ($f in $files) {
+              $stem = [System.IO.Path]::GetFileNameWithoutExtension($f.Name)
+              pyinstaller $f.FullName --noconfirm --onefile --name $stem
+              Move-Item ("dist\" + $stem + ".exe") ("dist\Parsers\Incremental\" + $stem + ".exe") -Force
+            }
+          }
 
-      - name: Upload artifacts
+      # 5) Драйверы: копируем Windows-версию в dist\drivers\Windows (как в коде)
+      - name: Copy Windows driver into dist/drivers/Windows
+        shell: powershell
+        run: |
+          if (Test-Path "Drivers\Windows") {
+            New-Item -ItemType Directory -Force -Path dist\drivers\Windows | Out-Null
+            Copy-Item "Drivers\Windows\*" "dist\drivers\Windows\" -Recurse -Force
+            Get-ChildItem dist\drivers\Windows
+          }
+
+      # 5b) Данные для парсеров: копируем Urls и Lexicons в dist/, чтобы их видели .exe
+      - name: Copy data folders (Urls, Lexicons) into dist
+        shell: powershell
+        run: |
+          if (Test-Path "Urls") {
+            New-Item -ItemType Directory -Force -Path dist\Urls | Out-Null
+            Copy-Item "Urls\*" "dist\Urls\" -Recurse -Force
+            Write-Host "Copied Urls -> dist\Urls"
+          }
+          if (Test-Path "Lexicons") {
+            New-Item -ItemType Directory -Force -Path dist\Lexicons | Out-Null
+            Copy-Item "Lexicons\*" "dist\Lexicons\" -Recurse -Force
+            Write-Host "Copied Lexicons -> dist\Lexicons"
+          }
+
+      # 6) Публикация
+      - name: Upload artifacts (bundle)
         uses: actions/upload-artifact@v4
         with:
-          name: ReviewAnalytics-macOS-arm64
-          path: |
-            dist/ReviewAnalytics.app
-            dist/ReviewAnalytics-bundle-arm64/**
+          name: ReviewAnalytics-bundle
+          path: dist/**
