@@ -5,6 +5,7 @@ import platform
 from pathlib import Path
 from datetime import datetime
 from typing import Optional, Any, List, Tuple, Dict
+from PyQt6.QtGui import QPalette, QColor
 
 import pandas as pd
 from PyQt6.QtCore import (
@@ -39,6 +40,29 @@ if platform.system() == "Windows":
         sys.stderr.reconfigure(encoding="utf-8", errors="replace")
     except Exception:
         pass
+
+def enable_dark_mode(app: QApplication):
+    app.setStyle("Fusion")
+    dark = QPalette()
+
+    dark.setColor(QPalette.ColorRole.Window, QColor(37, 37, 38))
+    dark.setColor(QPalette.ColorRole.Base, QColor(30, 30, 30))
+    dark.setColor(QPalette.ColorRole.AlternateBase, QColor(45, 45, 48))
+    dark.setColor(QPalette.ColorRole.ToolTipBase, QColor(37, 37, 38))
+    dark.setColor(QPalette.ColorRole.ToolTipText, QColor(240, 240, 240))
+
+    dark.setColor(QPalette.ColorRole.Text, QColor(230, 230, 230))
+    dark.setColor(QPalette.ColorRole.WindowText, QColor(230, 230, 230))
+    dark.setColor(QPalette.ColorRole.ButtonText, QColor(230, 230, 230))
+    dark.setColor(QPalette.ColorRole.BrightText, QColor(255, 0, 0))
+
+    dark.setColor(QPalette.ColorRole.Button, QColor(45, 45, 48))
+    dark.setColor(QPalette.ColorRole.Highlight, QColor(10, 132, 255))
+    dark.setColor(QPalette.ColorRole.HighlightedText, QColor(255, 255, 255))
+    dark.setColor(QPalette.ColorRole.PlaceholderText, QColor(180, 180, 180))
+
+    app.setPalette(dark)
+
 
 def _is_frozen() -> bool:
     return getattr(sys, "frozen", False)
@@ -1432,6 +1456,8 @@ class MainWindow(QMainWindow):
 
 def main():
     app = QApplication(sys.argv)
+    if platform.system() == "Windows":
+        enable_dark_mode(app)
     win = MainWindow()
     win.show()
     sys.exit(app.exec())
