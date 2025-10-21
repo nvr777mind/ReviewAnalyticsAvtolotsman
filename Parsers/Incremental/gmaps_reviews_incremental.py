@@ -723,7 +723,7 @@ def main():
                     print("  [WARN] не найден контейнер отзывов, пропускаю")
                     continue
 
-            cutoff_default = date.today() - timedelta(days=365 * 2)
+            cutoff_default = date.today() - timedelta(days=365 * 2 + 10)
             threshold = latest_by_org.get(ORG_KEY, cutoff_default)
             print(f"  Организация: {ORG_LABEL} | Пороговая дата (последняя в all_reviews): {threshold.isoformat()}")
 
