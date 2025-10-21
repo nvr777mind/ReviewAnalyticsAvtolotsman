@@ -1,6 +1,7 @@
 import sys
 import csv
 import json
+import platform
 from pathlib import Path
 from datetime import datetime
 from typing import Optional, Any, List, Tuple, Dict
@@ -25,6 +26,19 @@ try:
     from plyer import notification as plyer_notification
 except Exception:
     plyer_notification = None
+
+if platform.system() == "Windows":
+    try:
+        import ctypes
+        ctypes.windll.kernel32.SetConsoleOutputCP(65001)
+        ctypes.windll.kernel32.SetConsoleCP(65001)
+    except Exception:
+        pass
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
 
 def _is_frozen() -> bool:
     return getattr(sys, "frozen", False)

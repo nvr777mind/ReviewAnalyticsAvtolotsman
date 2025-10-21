@@ -16,10 +16,8 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.common.action_chains import ActionChains
 from selenium.common.exceptions import NoSuchWindowException, WebDriverException, TimeoutException
-# --- добавлено для защиты от протухших элементов ---
 from selenium.common.exceptions import StaleElementReferenceException, JavascriptException
 import time
-# ---------------------------------------------------
 
 from typing import Optional, Dict
 
@@ -601,7 +599,7 @@ def main():
     if latest_by_org:
         print(f"[INFO] Найдены последние даты по {len(latest_by_org)} организациям в '{IN_ALL_REVIEWS_CSV}'.")
     else:
-        print(f"[INFO] '{IN_ALL_REVIEWS_CSV}' не найден или пуст — будем собирать всё, что есть (порог = 1900-01-01).")
+        print(f"[INFO] '{IN_ALL_REVIEWS_CSV}' не найден или пуст — будем собирать всё, что есть (порог = 2 года).")
 
     try:
         urls = [u.strip() for u in Path(YAMAPS_URLS_FILE).read_text(encoding="utf-8").splitlines() if u.strip()]
@@ -650,7 +648,8 @@ def main():
                 continue
 
             organization = extract_organization_from_url(driver.current_url or url) or ""
-            threshold = latest_by_org.get(organization, date(1900, 1, 1))
+            cutoff_default = date.today() - timedelta(days=365 * 2)
+            threshold = latest_by_org.get(organization, cutoff_default)
 
             print(f"  Организация: {organization or '-'} | Пороговая дата (последняя в all_reviews): {threshold.isoformat()}")
 
@@ -707,17 +706,14 @@ def main():
             for _ in range(BURSTS):
                 if stop:
                     break
-                # --- проверка/восстановление контейнера перед скроллом ---
                 if not _container_alive(driver, container):
                     try:
                         container = get_scroll_container(driver)
                     except Exception:
-                        # если совсем плохо — используем документ
                         try:
                             container = driver.execute_script("return document.scrollingElement || document.body;")
                         except Exception:
                             pass
-                # ---------------------------------------------------------
                 prev_len = len(batch)
                 autoscroll_burst(driver, container, BURST_MS)
                 expand_all_visible(driver)

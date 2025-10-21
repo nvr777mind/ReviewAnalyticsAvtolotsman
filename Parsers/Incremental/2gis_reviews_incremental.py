@@ -753,7 +753,8 @@ def main():
         for i, url in enumerate(urls, 1):
             org_slug = extract_organization_from_url(url) or ""
             org_key = normalize_org(org_slug)
-            cutoff = latest_by_org.get(org_key, date(1900,1,1))
+            cutoff_default = date.today() - timedelta(days=365 * YEARS_LIMIT_HINT)
+            cutoff = latest_by_org.get(org_key, cutoff_default)
 
             print(f"[{i}/{len(urls)}] {url} -> org='{org_slug or '-'}' | порог={cutoff.isoformat()}")
 
