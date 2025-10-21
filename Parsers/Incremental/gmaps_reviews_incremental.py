@@ -661,7 +661,7 @@ def main():
     if latest_by_org:
         print(f"[INFO] Найдены последние даты по {len(latest_by_org)} организациям в '{ALL_REVIEWS_CSV}'.")
     else:
-        print(f"[INFO] '{ALL_REVIEWS_CSV}' не найден или пуст — будем собирать всё, что есть (порог = 1900-01-01).")
+        print(f"[INFO] '{ALL_REVIEWS_CSV}' не найден или пуст — будем собирать всё, что есть (порог = 2 года).")
 
     existing_keys = load_existing_review_keys(ALL_REVIEWS_CSV, PLATFORM)
     print(f"[INFO] Загружены ключи для дедупликации из '{ALL_REVIEWS_CSV}': "
@@ -723,7 +723,8 @@ def main():
                     print("  [WARN] не найден контейнер отзывов, пропускаю")
                     continue
 
-            threshold = latest_by_org.get(ORG_KEY, date(1900, 1, 1))
+            cutoff_default = date.today() - timedelta(days=365 * 2)
+            threshold = latest_by_org.get(ORG_KEY, cutoff_default)
             print(f"  Организация: {ORG_LABEL} | Пороговая дата (последняя в all_reviews): {threshold.isoformat()}")
 
             existing_keys_for_org = existing_keys.get(ORG_KEY, set())
