@@ -510,8 +510,10 @@ class MainWindow(QMainWindow):
         csv_row = QHBoxLayout()
         csv_row.setContentsMargins(0, 0, 0, 0)
         csv_row.setSpacing(8)
-        csv_row.addWidget(self._csv_current_label, 1)
+        csv_row.setAlignment(Qt.AlignmentFlag.AlignLeft)
+        csv_row.addWidget(self._csv_current_label)
         csv_row.addWidget(self._csv_toggle_btn)
+        csv_row.addStretch(1)
         csv_w = QWidget(); csv_w.setLayout(csv_row)
         fl.addRow(QLabel("Датасет:"), csv_w)
 
