@@ -207,11 +207,15 @@ def build_options(profile_dir: Optional[str] = None) -> Options:
     opts.add_argument("--lang=ru-RU,ru")
     opts.page_load_strategy = "eager"
 
+    opts.add_argument("--no-first-run")
+    opts.add_argument("--no-default-browser-check")
+    opts.add_argument("--disable-extensions")
+
     use_dir = profile_dir or PROFILE_DIR
     opts.add_argument(f"--user-data-dir={use_dir}")
     opts.add_argument("--profile-directory=Default")
 
-    opts.add_experimental_option("excludeSwitches", ["enable-automation"])
+    opts.add_experimental_option("excludeSwitches", ["enable-automation", "enable-logging"])
     opts.add_experimental_option("useAutomationExtension", False)
 
     opts.add_argument("--blink-settings=imagesEnabled=false")
@@ -222,20 +226,22 @@ def build_options(profile_dir: Optional[str] = None) -> Options:
     opts.add_experimental_option("prefs", prefs)
     return opts
 
-def setup_driver() -> webdriver.Chrome:
+def setup_driver_with_fallback(prev_tmp_dir: Optional[str] = None) -> Tuple[webdriver.Chrome, Optional[str]]:
+    """Создаёт драйвер: сначала с постоянным профилем, при залочке — с (единым) временным профилем."""
     if yb and not Path(str(yb)).exists():
         print(f"[2GIS WARN] Нет Yandex Browser по пути: {str(yb)} — попробуем системный Chrome.")
     if not Path(YANDEXDRIVER_PATH).is_file():
         raise FileNotFoundError(f"Нет yandexdriver: {YANDEXDRIVER_PATH}")
 
     service = Service(executable_path=YANDEXDRIVER_PATH)
-    tmp_profile_dir = None
+
     try:
         drv = webdriver.Chrome(service=service, options=build_options(PROFILE_DIR))
+        tmp_dir = None
     except SessionNotCreatedException as e:
         print(f"[2GIS WARN] {e.__class__.__name__}: {e}. Switching to a temporary profile.")
-        tmp_profile_dir = tempfile.mkdtemp(prefix="2gis_tmp_profile_")
-        drv = webdriver.Chrome(service=service, options=build_options(tmp_profile_dir))
+        tmp_dir = prev_tmp_dir or tempfile.mkdtemp(prefix="2gis_tmp_profile_")
+        drv = webdriver.Chrome(service=service, options=build_options(tmp_dir))
 
     drv.set_page_load_timeout(90); drv.set_script_timeout(90); drv.implicitly_wait(0)
     try:
@@ -244,22 +250,22 @@ def setup_driver() -> webdriver.Chrome:
         })
     except:
         pass
-
     block_heavy_assets(drv)
-
     try:
-        setattr(drv, "_tmp_profile_dir", tmp_profile_dir)
+        drv.get("about:blank")
     except Exception:
         pass
-    return drv
+    time.sleep(0.3)
+    return drv, tmp_dir
 
-def _cleanup_tmp_profile(driver: Optional[webdriver.Chrome]):
-    try:
-        tmp = getattr(driver, "_tmp_profile_dir", None)
-        if tmp and Path(tmp).exists():
-            shutil.rmtree(tmp, ignore_errors=True)
-    except Exception:
-        pass
+def _cleanup_tmp_dir(tmp_dir: Optional[str]):
+    if tmp_dir:
+        try:
+            p = Path(tmp_dir)
+            if p.exists():
+                shutil.rmtree(p, ignore_errors=True)
+        except Exception:
+            pass
 
 def ensure_window(drv) -> bool:
     try: return bool(drv.window_handles)
@@ -270,6 +276,28 @@ def safe_get(drv, url: str) -> bool:
         drv.get(url); return True
     except (NoSuchWindowException, WebDriverException):
         return False
+
+def navigate_with_retry(driver_ctx: dict, url: str) -> bool:
+    """
+    driver_ctx = {"drv": WebDriver, "tmp_dir": str|None}
+    Открыть url; если сессия умерла — пересоздать драйвер (с тем же temp-профилем) и повторить.
+    """
+    try:
+        driver_ctx["drv"].get(url)
+        return True
+    except (NoSuchWindowException, WebDriverException):
+        try:
+            driver_ctx["drv"].quit()
+        except Exception:
+            pass
+        new_drv, new_tmp = setup_driver_with_fallback(driver_ctx.get("tmp_dir"))
+        driver_ctx["drv"] = new_drv
+        driver_ctx["tmp_dir"] = new_tmp
+        try:
+            driver_ctx["drv"].get(url)
+            return True
+        except Exception:
+            return False
 
 def click_cookies_if_any(driver):
     btn_xps = [
@@ -620,42 +648,45 @@ def soft_wait_for_growth(driver, container, prev_h: int, prev_cards: int, timeou
         time.sleep(0.05)
     return last_h, last_cards
 
-def process_one_url(driver: webdriver.Chrome,
+def process_one_url(driver_ctx: dict,
                     url: str,
                     forced_org: Optional[str],
                     cutoff_date: date
                    ) -> Tuple[str, List[Dict], Tuple[Optional[float], Optional[int], Optional[int]]]:
 
-    if not ensure_window(driver):
-        print(f"[2GIS WARN] Window is not available. Skip url={url}")
-        return "", [], (None, None, None)
+    drv = driver_ctx["drv"]
 
-    if not safe_get(driver, url):
+    if not ensure_window(drv):
+        new_drv, new_tmp = setup_driver_with_fallback(driver_ctx.get("tmp_dir"))
+        driver_ctx["drv"] = drv = new_drv
+        driver_ctx["tmp_dir"] = new_tmp
+
+    if not navigate_with_retry(driver_ctx, url):
         print(f"[2GIS WARN] safe_get failed. Skip url={url}")
         return "", [], (None, None, None)
 
-    inject_perf_css(driver)
+    inject_perf_css(drv)
     org = forced_org or extract_organization_from_url(url) or ""
 
     try:
-        rating_avg, ratings_count, reviews_count = extract_summary_2gis(driver)
+        rating_avg, ratings_count, reviews_count = extract_summary_2gis(drv)
     except Exception:
         rating_avg = ratings_count = reviews_count = None
 
-    try: click_cookies_if_any(driver)
+    try: click_cookies_if_any(drv)
     except: pass
-    try: ensure_reviews_tab(driver)
+    try: ensure_reviews_tab(drv)
     except: pass
 
-    switch_to_reviews_iframe(driver)
+    switch_to_reviews_iframe(drv)
 
     try:
-        wait_for_reviews_content(driver)
+        wait_for_reviews_content(drv)
     except TimeoutException:
         print(f"[2GIS WARN] Timeout waiting reviews. Skip url={url}")
         return org, [], (rating_avg, ratings_count, reviews_count)
 
-    container = get_scroll_container(driver)
+    container = get_scroll_container(drv)
     if container is None:
         print(f"[2GIS WARN] No scroll container. Skip url={url}")
         return org, [], (rating_avg, ratings_count, reviews_count)
@@ -666,19 +697,19 @@ def process_one_url(driver: webdriver.Chrome,
     idle = 0
     stop_by_age = False
 
-    added, met_old = collect_visible_batch(driver, cutoff_date, dedupe_index, results)
+    added, met_old = collect_visible_batch(drv, cutoff_date, dedupe_index, results)
     if met_old: stop_by_age = True
 
     for _ in range(BURSTS):
         if stop_by_age: break
         prev_len = len(results)
-        prev_h = get_scroll_height(driver, container)
-        prev_cards = len(find_review_cards(driver))
+        prev_h = get_scroll_height(drv, container)
+        prev_cards = len(find_review_cards(drv))
 
-        autoscroll_burst(driver, container, BURST_MS)
-        new_h, new_cards = soft_wait_for_growth(driver, container, prev_h, prev_cards, BETWEEN_BURSTS_SOFT_WAIT)
+        autoscroll_burst(drv, container, BURST_MS)
+        new_h, new_cards = soft_wait_for_growth(drv, container, prev_h, prev_cards, BETWEEN_BURSTS_SOFT_WAIT)
 
-        added, met_old = collect_visible_batch(driver, cutoff_date, dedupe_index, results)
+        added, met_old = collect_visible_batch(drv, cutoff_date, dedupe_index, results)
         if met_old: stop_by_age = True
 
         height_grew = new_h > prev_h + 2
@@ -714,26 +745,12 @@ def main():
     total_written_by_org: Dict[str, int] = {}
     summary_by_org: Dict[str, Dict[str, float]] = {}
 
-    driver = None
+    driver, tmp_dir = None, None
     try:
-        try:
-            driver = setup_driver()
-        except SessionNotCreatedException as e:
-            print(f"[2GIS WARN] {e.__class__.__name__}: {e}. Abort run.")
-            return
+        driver, tmp_dir = setup_driver_with_fallback()
+        driver_ctx = {"drv": driver, "tmp_dir": tmp_dir}
 
         for i, url in enumerate(urls, 1):
-            if not ensure_window(driver):
-                try:
-                    driver.quit()
-                except: pass
-                _cleanup_tmp_profile(driver)
-                try:
-                    driver = setup_driver()
-                except Exception as e:
-                    print(f"[2GIS WARN] Recreate driver failed: {e}. Stop remaining URLs.")
-                    break
-
             org_slug = extract_organization_from_url(url) or ""
             org_key = normalize_org(org_slug)
             cutoff = latest_by_org.get(org_key, date(1900,1,1))
@@ -742,11 +759,12 @@ def main():
 
             try:
                 org, reviews, (rating_avg, ratings_count, reviews_count) = process_one_url(
-                    driver, url, forced_org=org_slug, cutoff_date=cutoff
+                    driver_ctx, url, forced_org=org_slug, cutoff_date=cutoff
                 )
             except (NoSuchWindowException, WebDriverException, TimeoutException) as e:
                 print(f"[2GIS WARN] {e.__class__.__name__}: Skip url={url}")
-                org, reviews, rating_avg, ratings_count, reviews_count = "", [], None, None, None
+                org, reviews = "", []
+                rating_avg = ratings_count = reviews_count = None
 
             written = 0
             for r in reviews:
@@ -782,7 +800,7 @@ def main():
             if driver:
                 driver.quit()
         except: pass
-        _cleanup_tmp_profile(driver)
+        _cleanup_tmp_dir(tmp_dir)
 
     with open(OUT_CSV_SUMMARY_NEW, "w", newline="", encoding="utf-8") as fsum2:
         w2 = csv.DictWriter(fsum2, fieldnames=["organization","platform","rating_avg","ratings_count","reviews_count"], quoting=csv.QUOTE_ALL)
