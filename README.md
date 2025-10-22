@@ -16,7 +16,7 @@
   - **Количество новых отзывов** берётся по строкам `Csv/Reviews/NewReviews/all_new_since.csv`.
   - Изменения рейтинга считаются как разница между `Csv/Summary/NewSummary/all_new_summary.csv` и `Csv/Summary/all_summary.csv`.
 
-## Для запуска
+## Для работы приложения
 - Необходим **Яндекс Браузер** новейшей версии
 
 - Для OS Windows **browser.exe** должен находиться по одному из путей:
