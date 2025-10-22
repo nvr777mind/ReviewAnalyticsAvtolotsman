@@ -63,6 +63,10 @@ def enable_dark_mode(app: QApplication):
 
     app.setPalette(dark)
 
+def bump_win_button_font(app, size_pt: int = 11):
+    if platform.system() == "Windows":
+        app.setStyleSheet(app.styleSheet() + f"\nQPushButton {{ font-size: {size_pt}pt; }}")
+
 
 def _is_frozen() -> bool:
     return getattr(sys, "frozen", False)
@@ -519,7 +523,7 @@ class MainWindow(QMainWindow):
         self._csv_current_label = QLabel("")
         self._csv_current_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
 
-        common_h = 28
+        common_h = 32
         for w in [self._csv_toggle_btn,
                   self._platform_combo, self._org_combo, self._sentiment_combo,
                   self._rmin, self._rmax, self._date_from, self._date_to,
@@ -1458,6 +1462,7 @@ def main():
     app = QApplication(sys.argv)
     if platform.system() == "Windows":
         enable_dark_mode(app)
+        bump_win_button_font(app, size_pt=13)
     win = MainWindow()
     win.show()
     sys.exit(app.exec())
