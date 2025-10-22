@@ -63,7 +63,7 @@ def enable_dark_mode(app: QApplication):
 
     app.setPalette(dark)
 
-def bump_win_button_font(app, size_pt: int = 11):
+def bump_win_button_font(app, size_pt: int = 10):
     if platform.system() == "Windows":
         app.setStyleSheet(app.styleSheet() + f"\nQPushButton {{ font-size: {size_pt}pt; }}")
 
@@ -492,7 +492,7 @@ class MainWindow(QMainWindow):
         common_run_style = """
             QPushButton {
                 background-color: #d1ecf1; border: 1px solid #bee5eb;
-                padding: 6px 12px; border-radius: 6px; color: #0c5460;
+                padding: 6px 12px; border-radius: 6px; color: #000000;
             }
             QPushButton:hover { background-color: #cbe7ed; }
             QPushButton:pressed { background-color: #bee5eb; }
@@ -523,7 +523,7 @@ class MainWindow(QMainWindow):
         self._csv_current_label = QLabel("")
         self._csv_current_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
 
-        common_h = 32
+        common_h = 31
         for w in [self._csv_toggle_btn,
                   self._platform_combo, self._org_combo, self._sentiment_combo,
                   self._rmin, self._rmax, self._date_from, self._date_to,
@@ -650,7 +650,7 @@ class MainWindow(QMainWindow):
         top_row.addWidget(self._charts_group, 1)
 
         self._expand_btn = QPushButton("Развернуть список отзывов")
-        self._expand_btn.setFixedHeight(28)
+        self._expand_btn.setFixedHeight(31)
         self._expand_btn.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
         self._expand_style_collapsed = """
             QPushButton { background-color: #d4edda; border: 1px solid #c3e6cb;
@@ -1120,7 +1120,22 @@ class MainWindow(QMainWindow):
                     "положительная": "positive", "отрицательная": "negative", "нейтральная": "neutral"
                 }).value_counts()
                 if not counts.empty:
-                    self._ax_sent.pie(counts.values, labels=counts.index, autopct="%1.0f%%", startangle=90)
+                    vals = counts.values.astype(float)
+                    labels = [str(x) for x in counts.index]
+
+                    wedges, _ = self._ax_sent.pie(vals, startangle=90)
+
+                    total = vals.sum() if vals.sum() else 1.0
+                    legend_labels = [f"{lab} - {int(round(v * 100 / total))}%" for lab, v in zip(labels, vals)]
+                    
+                    self._fig_sent.subplots_adjust(right=0.72)
+                    self._ax_sent.legend(
+                        wedges, legend_labels,
+                        title="Тональноть",
+                        loc="center left",
+                        frameon=False, borderaxespad=0.0, labelspacing=0.6
+                    )
+
                     self._ax_sent.axis("equal")
                 else:
                     self._ax_sent.text(0.5, 0.5, "Нет данных по тональности",
@@ -1462,7 +1477,10 @@ def main():
     app = QApplication(sys.argv)
     if platform.system() == "Windows":
         enable_dark_mode(app)
-        bump_win_button_font(app, size_pt=13)
+        bump_win_button_font(app, size_pt=10)
+        app.setStyleSheet(app.styleSheet() + """
+            QPushButton { font-weight: 650; } /* DemiBold */
+            """)
     win = MainWindow()
     win.show()
     sys.exit(app.exec())
