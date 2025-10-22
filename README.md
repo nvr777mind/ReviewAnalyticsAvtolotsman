@@ -10,9 +10,20 @@
 - Диаграммы: распределение по рейтингу, доли по тональности.
 - Экспорт отфильтрованного в CSV/JSON.
 - **Полный сбор** (парсеры → слияние) и **инкрементальный сбор** (только новые).
+
 - Отметка **требует ответа** - динамическое изменение поля через интерфейс
 - Уведомления:
   - **Количество новых отзывов** берётся по строкам `Csv/Reviews/NewReviews/all_new_since.csv`.
   - Изменения рейтинга считаются как разница между `Csv/Summary/NewSummary/all_new_summary.csv` и `Csv/Summary/all_summary.csv`.
 
+## Для запуска
+- Необходим **Яндекс Браузер** новейшей версии
 
+- Для OS Windows **browser.exe** должен находиться по одному из путей:
+  - `C:/AppData/local/Yandex/YandexBrowser/Application/browser.exe`
+  - `C:/LOCALAPPDATA/Yandex/YandexBrowser/Application/browser.exe`
+  - `C:/ProgramFiles/Yandex/YandexBrowser/Application/browser.exe`
+
+  - `C:/ProgramFiles(x86)/Yandex/YandexBrowser/Application/browser.exe`
+
+- Версия **Яндекс Драйвера** и **Яндекс Браузера** должны совпадать (по первым двум числам XX.X...). При несоответствии версий необходимо скачать **Яндекс Драйвер** соответствующий версии браузера и OS по ссылке: https://github.com/yandex/YandexDriver/releases. Далее нужно распаковать архив в любом месте и переместить **yandexdriver.exe** в `папку приложения/Drivers/Windows/` с заменой старого драйвера.
