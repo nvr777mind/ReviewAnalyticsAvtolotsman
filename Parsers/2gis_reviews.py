@@ -187,9 +187,9 @@ def setup_driver(headless: bool = False) -> Tuple[webdriver.Chrome, str]:
     Имеет 1 ретрай на случай залочки профиля.
     """
     if not yb or not Path(str(yb)).exists():
-        raise FileNotFoundError(f"Яндекс.Браузер не найден: {yb}")
+        raise FileNotFoundError(f"Yandex Browser not found: {yb}")
     if not Path(YANDEXDRIVER_PATH).is_file():
-        raise FileNotFoundError(f"Нет yandexdriver: {YANDEXDRIVER_PATH}")
+        raise FileNotFoundError(f"No Yandex Driver: {YANDEXDRIVER_PATH}")
 
     _taskkill_stale_drivers()
 
@@ -785,7 +785,7 @@ def process_one_url(driver: webdriver.Chrome, url: str, forced_org: Optional[str
     for r in results:
         r["organization"] = org
 
-    print(f"  Собрано: {len(results)} | org={org or '-'}")
+    print(f"  Collected: {len(results)} | org={org or '-'}")
     return results
 
 def main():
@@ -825,7 +825,7 @@ def main():
                 w = csv.DictWriter(f, fieldnames=fieldnames, quoting=csv.QUOTE_ALL)
                 w.writeheader()
 
-            print(f"Готово. Всего отзывов: 0. CSV отзывов: {OUT_CSV}\nSummary: {OUT_CSV_SUMMARY}")
+            print(f"Done. Total reviews: 0. CSV reviews: {OUT_CSV}\nSummary: {OUT_CSV_SUMMARY}")
             return
 
         for i, url in enumerate(urls, 1):
@@ -856,7 +856,7 @@ def main():
                 "organization": (r.get("organization") or "").strip(),
             })
 
-    print(f"Готово. Всего отзывов: {len(all_rows)}. CSV отзывов: {OUT_CSV}\nSummary: {OUT_CSV_SUMMARY}")
+    print(f"Done. Total reviews: {len(all_rows)}. CSV reviews: {OUT_CSV}\nSummary: {OUT_CSV_SUMMARY}")
 
 
 if __name__ == "__main__":

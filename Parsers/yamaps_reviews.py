@@ -16,10 +16,8 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.common.action_chains import ActionChains
 from selenium.common.exceptions import NoSuchWindowException, WebDriverException, TimeoutException
-# --- добавлено для фикса ---
 from selenium.common.exceptions import StaleElementReferenceException, JavascriptException
 import time
-# --- конец добавлений ---
 
 import os, sys, platform
 from pathlib import Path
@@ -525,11 +523,11 @@ def main():
 
             if not safe_get(driver, url):
                 if not safe_get(driver, url):
-                    print("  пропускаю: не удалось открыть URL")
+                    print("  skipping: unable to open URL")
                     continue
 
             if not ensure_window(driver):
-                print("  пропускаю: окно браузера недоступно")
+                print("  skipping: Browser window unavailable")
                 continue
 
             try:
@@ -537,7 +535,7 @@ def main():
                     EC.presence_of_element_located((By.CSS_SELECTOR, "div.orgpage-header-view, div.business-review-view"))
                 )
             except TimeoutException:
-                print("  пропускаю: страница не загрузилась")
+                print("  skipping: page did not load")
                 continue
 
             current = driver.current_url or url
@@ -576,7 +574,7 @@ def main():
                     EC.presence_of_element_located((By.CSS_SELECTOR, "div.business-review-view"))
                 )
             except TimeoutException:
-                print("  нет блока отзывов")
+                print("  there is no review block")
                 continue
 
             inject_perf_css(driver)
@@ -620,7 +618,7 @@ def main():
                     "organization": organization,
                 })
 
-            print(f"  summary: rating={rating_avg}, ratings={ratings_count}, reviews={reviews_count} | отзывов собрано: {len(batch)} | org={organization or '-'}")
+            print(f"  summary: rating={rating_avg}, ratings={ratings_count}, reviews={reviews_count} | reviews collected: {len(batch)} | org={organization or '-'}")
 
     finally:
         try:
@@ -630,7 +628,7 @@ def main():
         f_rev.close()
         f_sum.close()
 
-    print(f"Готово. Summary -> {OUT_CSV_SUMMARY} | Reviews -> {OUT_CSV_REVIEWS}")
+    print(f"Done. Summary -> {OUT_CSV_SUMMARY} | Reviews -> {OUT_CSV_REVIEWS}")
 
 if __name__ == "__main__":
     main()

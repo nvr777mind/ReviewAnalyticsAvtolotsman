@@ -138,12 +138,12 @@ def main():
 
     added = merge_into_all_reviews(combined_rows, combined_fields)
 
-    print("[OK] Объединение дельт завершено.")
-    print(f"  Источниковых строк всего: {total_src}")
-    print(f"  Уникальных в all_new_since: {len(combined_rows)}")
-    print(f"  Добавлено в all_reviews: {added}")
+    print("[OK] The merger is complete.")
+    print(f"  Total source lines: {total_src}")
+    print(f"  Unique in all_new_since: {len(combined_rows)}")
+    print(f"  Added in all_reviews: {added}")
     print(f"  all_new_since: {ALL_NEW_SINCE}")
-    print(f"  all_reviews:   {ALL_REVIEWS} (включая заголовок: {len(combined_rows) + 1 if not ALL_REVIEWS.exists() else 'см. файл'})")
+    print(f"  all_reviews:   {ALL_REVIEWS} (including the title: {len(combined_rows) + 1 if not ALL_REVIEWS.exists() else 'see file'})")
 
 
 if __name__ == "__main__":

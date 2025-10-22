@@ -767,18 +767,18 @@ class MainWindow(QMainWindow):
         """
         path = Path("Csv/Reviews/NewReviews/all_new_since.csv")
         if not path.exists():
-            self._append_log("[NOTIFY] all_new_since.csv не найден — не из чего считать количество новых отзывов.")
+            self._append_log("[NOTIFY] all_new_since.csv not found - there is nothing to calculate the number of new reviews from.")
             return {}
         try:
             df = pd.read_csv(path, dtype=str, keep_default_na=False)
         except Exception as e:
-            self._append_log(f"[NOTIFY] Ошибка чтения all_new_since.csv: {e}")
+            self._append_log(f"[NOTIFY] Read error all_new_since.csv: {e}")
             return {}
 
         plat_col = self._find_col(df, ["platform", "Платформа"]) or "platform"
         org_col  = self._find_col(df, ["organization", "Организация"]) or "organization"
         if plat_col not in df.columns or org_col not in df.columns:
-            self._append_log("[NOTIFY] В all_new_since.csv нет колонок platform/organization — пропускаю подсчёт новых.")
+            self._append_log("[NOTIFY] In all_new_since.csv no columns platform/organization - skipping the new count.")
             return {}
 
         grp = df.groupby([plat_col, org_col], dropna=False).size()
@@ -806,18 +806,18 @@ class MainWindow(QMainWindow):
         old_df = None
 
         if not new_path.exists():
-            self._append_log("[NOTIFY] all_new_summary.csv не найден — проверять рейтинг нечего.")
+            self._append_log("[NOTIFY] all_new_summary.csv not found - nothing to check the rating for.")
         else:
             try:
                 new_df = pd.read_csv(new_path, dtype=str, keep_default_na=False)
             except Exception as e:
-                self._append_log(f"[NOTIFY] Ошибка чтения all_new_summary.csv: {e}")
+                self._append_log(f"[NOTIFY] Read error all_new_summary.csv: {e}")
 
             if old_path.exists():
                 try:
                     old_df = pd.read_csv(old_path, dtype=str, keep_default_na=False)
                 except Exception as e:
-                    self._append_log(f"[NOTIFY] Ошибка чтения all_summary.csv: {e}")
+                    self._append_log(f"[NOTIFY] Read error all_summary.csv: {e}")
 
         rating_changes: Dict[Tuple[str, str], Tuple[Optional[float], Optional[float]]] = {}
         if new_df is not None:
@@ -846,9 +846,9 @@ class MainWindow(QMainWindow):
         if new_df is not None:
             try:
                 new_df.to_csv(old_path, index=False)
-                self._append_log("[NOTIFY] Обновил all_summary.csv из all_new_summary.csv (после сравнения).")
+                self._append_log("[NOTIFY] Updated all_summary.csv from all_new_summary.csv (after comparison).")
             except Exception as e:
-                self._append_log(f"[NOTIFY] Не удалось обновить all_summary.csv: {e}")
+                self._append_log(f"[NOTIFY] Failed to update all_summary.csv: {e}")
 
         all_keys = set(since_counts.keys()) | set(rating_changes.keys())
 
@@ -885,7 +885,7 @@ class MainWindow(QMainWindow):
                 if d.get("old_rating") is not None and d.get("new_rating") is not None:
                     if abs(d["new_rating"] - d["old_rating"]) >= 0.01:
                         parts.append(f"рейтинг {d['old_rating']:.2f} -> {d['new_rating']:.2f}")
-                self._append_log(f"[CHANGE] {p} — {o}: " + (", ".join(parts) if parts else "изменение"))
+                self._append_log(f"[CHANGE] {p} — {o}: " + (", ".join(parts) if parts else "change"))
             return
 
         for p, o, d in changes:
@@ -1196,17 +1196,17 @@ class MainWindow(QMainWindow):
             return
 
         self._running = True
-        self._append_log("=== Старт парсеров (последовательно) ===")
+        self._append_log("=== Starting parsers (sequentially) ===")
         self._run_scrapers_sequentially(0)
 
     def _run_scrapers_sequentially(self, idx: int):
         if idx >= len(self.SCRAPER_SCRIPTS):
-            self._append_log("=== Все парсеры завершены. Запуск слияния… ===")
+            self._append_log("=== All parsers are complete. Starting merge… ===")
             self._run_merges_sequentially(0)
             return
 
         name, path = self.SCRAPER_SCRIPTS[idx]
-        self._append_log(f"[{name}] Запуск {path}…")
+        self._append_log(f"[{name}] Start {path}…")
         proc = QProcess(self)
         program, args = _script_cmd(path)
         proc.setProgram(program)
@@ -1223,12 +1223,12 @@ class MainWindow(QMainWindow):
         proc.start()
 
     def _on_scraper_finished_seq(self, code: int, status, idx: int, name: str):
-        self._append_log(f"[{name}] Завершён с кодом {code}.")
+        self._append_log(f"[{name}] Completed with code {code}.")
         self._run_scrapers_sequentially(idx + 1)
 
     def _run_merges_sequentially(self, idx: int):
         if idx >= len(self.MERGE_SCRIPTS):
-            self._append_log("=== Слияние завершено. Перезагрузка таблицы… ===")
+            self._append_log("=== Merge complete. Reloading table... ===")
             try:
                 self.autoload_csv()
                 QMessageBox.information(self, "Готово", "Данные обновлены и объединены.")
@@ -1238,7 +1238,7 @@ class MainWindow(QMainWindow):
             return
 
         name, path = self.MERGE_SCRIPTS[idx]
-        self._append_log(f"[{name}] Запуск {path}…")
+        self._append_log(f"[{name}] Start {path}…")
         proc = QProcess(self)
         program, args = _script_cmd(path)
         proc.setProgram(program)
@@ -1255,7 +1255,7 @@ class MainWindow(QMainWindow):
 
     def _on_merge_finished(self, code: int, status, idx: int):
         name, _ = self.MERGE_SCRIPTS[idx]
-        self._append_log(f"[{name}] Завершён с кодом {code}.")
+        self._append_log(f"[{name}] Completed with code {code}.")
         self._run_merges_sequentially(idx + 1)
 
     def _discover_incremental_scripts(self) -> list[tuple[str, Path]]:
@@ -1293,7 +1293,7 @@ class MainWindow(QMainWindow):
             msg = "Базовые файлы не найдены: " + \
                   ("all_reviews.csv отсутствует; " if not base_reviews.exists() else "") + \
                   ("all_summary.csv отсутствует; " if not base_summary.exists() else "")
-            self._append_log("[INCR->FULL] " + msg + "запускаю полный сбор.")
+            self._append_log("[INCR->FULL] " + msg + "launching a full collection.")
             self.statusBar().showMessage("Нет базовых файлов для инкремента. Запущен полный сбор.")
             self.run_full_pipeline(ask_confirm=False)
             return
@@ -1318,17 +1318,17 @@ class MainWindow(QMainWindow):
 
         self._running = True
         self._incr_scrapers_cache = incr_scrapers
-        self._append_log("=== Инкрементальные парсеры (последовательно) ===")
+        self._append_log("=== Incremental parsers (sequentially) ===")
         self._run_incr_scrapers_sequentially(0)
 
     def _run_incr_scrapers_sequentially(self, idx: int):
         if idx >= len(self._incr_scrapers_cache):
-            self._append_log("=== Инкрементальные парсеры завершены. Запуск объединения новых данных… ===")
+            self._append_log("=== Incremental parsers complete. Starting new data merging… ===")
             self._run_incr_merges_sequentially(0)
             return
 
         name, path = self._incr_scrapers_cache[idx]
-        self._append_log(f"[INCR {name}] Запуск {path}…")
+        self._append_log(f"[INCR {name}] Start {path}…")
 
         proc = QProcess(self)
         program, args = _script_cmd(path)
@@ -1346,12 +1346,12 @@ class MainWindow(QMainWindow):
         proc.start()
 
     def _on_incr_scraper_finished_seq(self, code: int, status, idx: int, name: str):
-        self._append_log(f"[INCR {name}] Завершён с кодом {code}.")
+        self._append_log(f"[INCR {name}] Completed with code {code}.")
         self._run_incr_scrapers_sequentially(idx + 1)
 
     def _run_incr_merges_sequentially(self, idx: int):
         if idx >= len(self.INCR_MERGE_SCRIPTS):
-            self._append_log("=== Инкрементальное слияние завершено. Перезагрузка таблицы… ===")
+            self._append_log("=== Incremental merge completed. Reloading table... ===")
             try:
                 self._send_incremental_notifications()
                 self.autoload_csv()
@@ -1362,7 +1362,7 @@ class MainWindow(QMainWindow):
             return
 
         name, path = self.INCR_MERGE_SCRIPTS[idx]
-        self._append_log(f"[{name}] Запуск {path}…")
+        self._append_log(f"[{name}] Start {path}…")
         proc = QProcess(self)
         program, args = _script_cmd(path)
         proc.setProgram(program)
@@ -1379,7 +1379,7 @@ class MainWindow(QMainWindow):
 
     def _on_incr_merge_finished(self, code: int, status, idx: int):
         name, _ = self.INCR_MERGE_SCRIPTS[idx]
-        self._append_log(f"[{name}] Завершён с кодом {code}.")
+        self._append_log(f"[{name}] Completed with code {code}.")
         self._run_incr_merges_sequentially(idx + 1)
 
     def _apply_column_layout(self):

@@ -229,9 +229,9 @@ def build_options(profile_dir: Optional[str] = None) -> Options:
 def setup_driver_with_fallback(prev_tmp_dir: Optional[str] = None) -> Tuple[webdriver.Chrome, Optional[str]]:
     """Создаёт драйвер: сначала с постоянным профилем, при залочке — с (единым) временным профилем."""
     if yb and not Path(str(yb)).exists():
-        print(f"[2GIS WARN] Нет Yandex Browser по пути: {str(yb)} — попробуем системный Chrome.")
+        print(f"[2GIS WARN] No Yandex Browser on the way: {str(yb)} — Let's try the system Chrome.")
     if not Path(YANDEXDRIVER_PATH).is_file():
-        raise FileNotFoundError(f"Нет yandexdriver: {YANDEXDRIVER_PATH}")
+        raise FileNotFoundError(f"No Yandex Driver: {YANDEXDRIVER_PATH}")
 
     service = Service(executable_path=YANDEXDRIVER_PATH)
 
@@ -720,7 +720,7 @@ def process_one_url(driver_ctx: dict,
     for r in results:
         r["organization"] = org
 
-    print(f"  Собрано новых: {len(results)} | org={org or '-'} | стоп по порогу: {stop_by_age}")
+    print(f"  New ones collected: {len(results)} | org={org or '-'} | stop at the threshold: {stop_by_age}")
     return org, results, (rating_avg, ratings_count, reviews_count)
 
 def main():
@@ -731,7 +731,7 @@ def main():
         urls = [FALLBACK_URL]
 
     latest_by_org = load_latest_dates_by_org(ALL_REVIEWS_CSV, PLATFORM)
-    print(f"[INFO] Пороговые даты: {len(latest_by_org)} орг. | speed={SPEED_PROFILE} | headless={HEADLESS}")
+    print(f"[INFO] Threshold dates: {len(latest_by_org)} орг. | speed={SPEED_PROFILE} | headless={HEADLESS}")
 
     prev_counts = load_prev_reviews_count(SUMMARY_BASE_CSV, PLATFORM)
 
@@ -756,7 +756,7 @@ def main():
             cutoff_default = date.today() - timedelta(days=365 * YEARS_LIMIT_HINT)
             cutoff = latest_by_org.get(org_key, cutoff_default)
 
-            print(f"[{i}/{len(urls)}] {url} -> org='{org_slug or '-'}' | порог={cutoff.isoformat()}")
+            print(f"[{i}/{len(urls)}] {url} -> org='{org_slug or '-'}' | threshold={cutoff.isoformat()}")
 
             try:
                 org, reviews, (rating_avg, ratings_count, reviews_count) = process_one_url(
@@ -784,7 +784,7 @@ def main():
 
             ok = normalize_org(org or org_slug)
             total_written_by_org[ok] = total_written_by_org.get(ok, 0) + written
-            print(f"  новых записано: {written}")
+            print(f"  new ones written: {written}")
 
             if ok not in summary_by_org:
                 summary_by_org[ok] = {
@@ -821,11 +821,11 @@ def main():
             except Exception:
                 continue
 
-    print(f"\nГотово.")
-    print(f"Отзывы (2ГИС) -> {OUT_CSV_REV_DELTA}")
-    print(f"Summary (новый, 2ГИС) -> {OUT_CSV_SUMMARY_NEW}")
-    print(f"Базовое summary (для старого счётчика) -> {SUMMARY_BASE_CSV}")
-    print(f"Пороговая база дат -> {ALL_REVIEWS_CSV}")
+    print(f"\nDone.")
+    print(f"Reviews (2GIS) -> {OUT_CSV_REV_DELTA}")
+    print(f"Summary (new, 2GIS) -> {OUT_CSV_SUMMARY_NEW}")
+    print(f"Base summary (for the old counter) -> {SUMMARY_BASE_CSV}")
+    print(f"Threshold date base -> {ALL_REVIEWS_CSV}")
 
 if __name__ == "__main__":
     main()

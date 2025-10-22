@@ -37,7 +37,7 @@ def main():
         for i, p in enumerate(INPUTS, 1):
             path = Path(p)
             if not path.is_file():
-                print(f"⚠️ пропущен: {p} (нет файла)")
+                print(f"⚠️ missed: {p} (no file)")
                 continue
 
             try:
@@ -46,7 +46,7 @@ def main():
                     try:
                         file_header = next(rdr)
                     except StopIteration:
-                        print(f"⚠️ пустой файл: {p}")
+                        print(f"⚠️ empty file: {p}")
                         continue
 
                     if writer is None:
@@ -55,7 +55,7 @@ def main():
                         writer.writerow(header)
                     else:
                         if file_header != header:
-                            print(f"⚠️ у {p} другой заголовок, строки будут пропущены")
+                            print(f"⚠️ {p} has a different header, lines will be skipped")
                             continue
 
                     file_rows = 0
@@ -65,16 +65,16 @@ def main():
                             rows_written += 1
                             file_rows += 1
                         except Exception as e:
-                            print(f"⚠️ строка пропущена в {p}: {e}")
+                            print(f"⚠️ line missing in {p}: {e}")
                             continue
 
                     files_merged += 1
-                    print(f"✓ {p}: добавлено {file_rows} строк")
+                    print(f"✓ {p}: added {file_rows} lines")
             except Exception as e:
-                print(f"⚠️ не удалось прочитать {p}: {e}")
+                print(f"⚠️ could not be read {p}: {e}")
                 continue
 
-    print(f"Готово -> {OUT} | файлов объединено: {files_merged}, строк записано: {rows_written}")
+    print(f"Done -> {OUT} | files merged: {files_merged}, lines written: {rows_written}")
 
 if __name__ == "__main__":
     main()

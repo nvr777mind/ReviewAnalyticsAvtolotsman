@@ -659,17 +659,17 @@ def collect_delta_gmaps(
 def main():
     latest_by_org = load_latest_dates_by_org(ALL_REVIEWS_CSV, PLATFORM)
     if latest_by_org:
-        print(f"[INFO] Найдены последние даты по {len(latest_by_org)} организациям в '{ALL_REVIEWS_CSV}'.")
+        print(f"[INFO] Latest dates found {len(latest_by_org)} organizations in '{ALL_REVIEWS_CSV}'.")
     else:
-        print(f"[INFO] '{ALL_REVIEWS_CSV}' не найден или пуст — будем собирать всё, что есть (порог = 2 года).")
+        print(f"[INFO] '{ALL_REVIEWS_CSV}' not found or empty - we will collect everything we have (threshold = 2 years).")
 
     existing_keys = load_existing_review_keys(ALL_REVIEWS_CSV, PLATFORM)
-    print(f"[INFO] Загружены ключи для дедупликации из '{ALL_REVIEWS_CSV}': "
-          f"{sum(len(v) for v in existing_keys.values())} штук (по всем организациям).")
+    print(f"[INFO] Deduplication keys loaded from '{ALL_REVIEWS_CSV}': "
+          f"{sum(len(v) for v in existing_keys.values())} pieces (across all organizations).")
 
     prev_counts = load_prev_reviews_count(SUMMARY_BASE_CSV, PLATFORM)
     prev_count = prev_counts.get(ORG_KEY, 0)
-    print(f"[INFO] Старый reviews_count из '{SUMMARY_BASE_CSV}' для '{ORG_LABEL}': {prev_count}")
+    print(f"[INFO] Old reviews_count from '{SUMMARY_BASE_CSV}' for '{ORG_LABEL}': {prev_count}")
 
     opts = Options()
     opts.binary_location = str(yb)
@@ -720,18 +720,18 @@ def main():
                 click_all_reviews(drv)
                 container = find_reviews_container(drv)
                 if not container:
-                    print("  [WARN] не найден контейнер отзывов, пропускаю")
+                    print("  [WARN] Feedback container not found, skipping")
                     continue
 
             cutoff_default = date.today() - timedelta(days=365 * 2 + 10)
             threshold = latest_by_org.get(ORG_KEY, cutoff_default)
-            print(f"  Организация: {ORG_LABEL} | Пороговая дата (последняя в all_reviews): {threshold.isoformat()}")
+            print(f"  Organization: {ORG_LABEL} | Threshold date (last in all_reviews): {threshold.isoformat()}")
 
             existing_keys_for_org = existing_keys.get(ORG_KEY, set())
 
             written = collect_delta_gmaps(drv, container, threshold, w_rev, ORG_LABEL, existing_keys_for_org)
             total_written += written
-            print(f"  новых отзывов записано (после дедупа): {written}")
+            print(f"  new reviews recorded: {written}")
 
             existing_keys[ORG_KEY] = existing_keys_for_org
 
@@ -743,8 +743,8 @@ def main():
             "ratings_count":last_ratings_count if last_ratings_count is not None else "",
             "reviews_count": new_reviews_count,
         })
-        print(f"[INFO] Итоговый reviews_count для summary: {new_reviews_count} "
-              f"(старое={prev_count} + новые={total_written})")
+        print(f"[INFO] Total reviews_count for summary: {new_reviews_count} "
+              f"(old={prev_count} + new={total_written})")
 
     finally:
         try: drv.quit()
@@ -752,10 +752,10 @@ def main():
         f_rev.close()
         f_sum.close()
 
-    print(f"\nГотово.")
-    print(f"Отзывы (Google) -> {OUT_CSV_REV_DELTA}")
-    print(f"Summary (новый, Google) -> {OUT_CSV_SUMMARY_NEW}")
-    print(f"Базовое summary (для старого счётчика) -> {SUMMARY_BASE_CSV}")
+    print(f"\nDone.")
+    print(f"Reviews (Google) -> {OUT_CSV_REV_DELTA}")
+    print(f"Summary (new, Google) -> {OUT_CSV_SUMMARY_NEW}")
+    print(f"Basw summary (for the old counter) -> {SUMMARY_BASE_CSV}")
 
 
 if __name__ == "__main__":

@@ -107,8 +107,8 @@ def main():
         for _, row in sorted(merged.items(), key=lambda kv: (kv[0][0], kv[0][1])):
             w.writerow(row)
 
-    print(f"[OK] Готово. Записано строк: {len(merged)}")
-    print(f"Файл: {OUT}")
+    print(f"[OK] Done. Lines written.: {len(merged)}")
+    print(f"File: {OUT}")
 
 
 if __name__ == "__main__":

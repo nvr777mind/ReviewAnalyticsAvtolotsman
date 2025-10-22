@@ -301,9 +301,9 @@ def process_csv(path: Path):
         w.writeheader()
         w.writerows(rows)
 
-    print(f"Обновлён: {path}  ({len(rows)} строк)  "
-          f"{'(RuSentiLex: локальный)' if RU_SENTI else '(встроенный словарь)'}  "
-          f"{'(NB: обучен)' if nb.ready() else '(NB: мало данных — использована лексика)'}")
+    print(f"Updated: {path}  ({len(rows)} lines)  "
+          f"{'(RuSentiLex: local)' if RU_SENTI else '(built-in dictionary)'}  "
+          f"{'(NB: trained)' if nb.ready() else '(NB: not enough data - vocabulary used)'}")
 
 if __name__ == "__main__":
     p = Path(sys.argv[1]) if len(sys.argv) > 1 else Path(DEFAULT_CSV)

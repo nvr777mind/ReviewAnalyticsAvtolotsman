@@ -61,7 +61,7 @@ def main():
         merged.extend(read_one(p))
 
     if not merged:
-        print("Нет входных файлов с данными. Нечего объединять.")
+        print("There are no input data files. Nothing to merge.")
         return
 
     dedup = {}
@@ -87,7 +87,7 @@ def main():
                 "reviews_count":row["reviews_count"],
             })
 
-    print(f"Готово. Итоговый файл: {OUT_FILE} (строк: {len(merged_unique)})")
+    print(f"Done. Final file: {OUT_FILE} (lines: {len(merged_unique)})")
 
 if __name__ == "__main__":
     main()

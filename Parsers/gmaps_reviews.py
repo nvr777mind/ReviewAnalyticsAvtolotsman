@@ -864,7 +864,7 @@ def main():
                 click_all_reviews(drv)
                 container = find_reviews_container(drv)
                 if not container:
-                    print("  не найден контейнер отзывов, пропускаю")
+                    print("  Feedback container not found, skipping")
                     w_sum.writerow({
                         "organization": ORG,
                         "platform":     PLATFORM,
@@ -884,14 +884,14 @@ def main():
                 "reviews_count":total_text_reviews,
             })
 
-            print(f"  summary: rating={rating_avg}, оценок={ratings_count}, текстовых (всего)={total_text_reviews}, записано <2 лет={written_recent}")
+            print(f"  summary: rating={rating_avg}, ratings={ratings_count}, text (total)={total_text_reviews}, written <2 years ago={written_recent}")
     finally:
         try: drv.quit()
         except Exception: pass
         f_rev.close()
         f_sum.close()
 
-    print(f"Готово. Reviews -> {OUT_CSV_REV} | Summary -> {OUT_CSV_SUM}")
+    print(f"Done. Reviews -> {OUT_CSV_REV} | Summary -> {OUT_CSV_SUM}")
 
 if __name__ == "__main__":
     main()

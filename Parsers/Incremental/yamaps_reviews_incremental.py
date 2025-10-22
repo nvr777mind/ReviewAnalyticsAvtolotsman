@@ -597,18 +597,18 @@ def collect_visible_delta(driver, seen: set, out: list, strictly_newer_than: dat
 def main():
     latest_by_org = load_latest_dates_by_org(IN_ALL_REVIEWS_CSV, PLATFORM)
     if latest_by_org:
-        print(f"[INFO] Найдены последние даты по {len(latest_by_org)} организациям в '{IN_ALL_REVIEWS_CSV}'.")
+        print(f"[INFO] Latest dates found {len(latest_by_org)} for organizations in '{IN_ALL_REVIEWS_CSV}'.")
     else:
-        print(f"[INFO] '{IN_ALL_REVIEWS_CSV}' не найден или пуст — будем собирать всё, что есть (порог = 2 года).")
+        print(f"[INFO] '{IN_ALL_REVIEWS_CSV}' not found or empty - we will collect everything we have (threshold = 2 years).")
 
     try:
         urls = [u.strip() for u in Path(YAMAPS_URLS_FILE).read_text(encoding="utf-8").splitlines() if u.strip()]
     except FileNotFoundError:
-        print(f"[WARN] Файл ссылок '{YAMAPS_URLS_FILE}' не найден.")
+        print(f"[WARN] Link file '{YAMAPS_URLS_FILE}' not found.")
         urls = []
 
     if not urls:
-        print("[ERROR] Нет входных ссылок для обработки.")
+        print("[ERROR] There are no input links to process..")
         return
 
     Path(OUT_CSV_DELTA).parent.mkdir(parents=True, exist_ok=True)
@@ -636,7 +636,7 @@ def main():
         for i, url in enumerate(urls, 1):
             print(f"\n[{i}/{len(urls)}] {url}")
             if not safe_get(driver, url) or not ensure_window(driver):
-                print("  [SKIP] Не удалось открыть окно/URL.")
+                print("  [SKIP] Failed to open window/URL.")
                 continue
 
             try:
@@ -644,14 +644,14 @@ def main():
                     EC.presence_of_element_located((By.CSS_SELECTOR, "div.orgpage-header-view, div.business-review-view"))
                 )
             except TimeoutException:
-                print("  [SKIP] Страница не загрузилась.")
+                print("  [SKIP] The page did not load.")
                 continue
 
             organization = extract_organization_from_url(driver.current_url or url) or ""
             cutoff_default = date.today() - timedelta(days=365 * 2)
             threshold = latest_by_org.get(organization, cutoff_default)
 
-            print(f"  Организация: {organization or '-'} | Пороговая дата (последняя в all_reviews): {threshold.isoformat()}")
+            print(f"  Organization: {organization or '-'} | Threshold date (last in all_reviews): {threshold.isoformat()}")
 
             try:
                 try:
@@ -686,7 +686,7 @@ def main():
                     EC.presence_of_element_located((By.CSS_SELECTOR, "div.business-review-view"))
                 )
             except TimeoutException:
-                print("  [INFO] Блок отзывов не найден.")
+                print("  [INFO] The review block was not found.")
                 continue
 
             inject_perf_css(driver)
@@ -737,7 +737,7 @@ def main():
                     "organization": organization,
                 })
 
-            print(f"  Новых отзывов собрано: {len(batch)} (до первой даты <= {threshold.isoformat()})")
+            print(f"  New reviews collected: {len(batch)} (before the first date <= {threshold.isoformat()})")
 
     finally:
         try:
@@ -747,9 +747,9 @@ def main():
         out_f_reviews.close()
         out_f_summary.close()
 
-    print(f"\nГотово.")
-    print(f"Отзывы -> {OUT_CSV_DELTA}")
-    print(f"Summary (новый) -> {OUT_CSV_SUMMARY_NEW}")
+    print(f"\nDone.")
+    print(f"Reviews -> {OUT_CSV_DELTA}")
+    print(f"Summary (new) -> {OUT_CSV_SUMMARY_NEW}")
 
 if __name__ == "__main__":
     main()
