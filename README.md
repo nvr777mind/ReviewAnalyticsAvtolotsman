@@ -20,7 +20,7 @@
 - Необходим **Яндекс Браузер** новейшей версии
 
 - Для OS Windows **browser.exe** должен находиться по одному из путей:
-  - `C:/AppData/local/Yandex/YandexBrowser/Application/browser.exe`
+  - `C:/*домашняя директория пользователя*/AppData/local/Yandex/YandexBrowser/Application/browser.exe`
   - `C:/LOCALAPPDATA/Yandex/YandexBrowser/Application/browser.exe`
   - `C:/ProgramFiles/Yandex/YandexBrowser/Application/browser.exe`
 
