@@ -5,8 +5,13 @@ from pathlib import Path
 from urllib.parse import urlparse, unquote
 
 import warnings
-from urllib3.exceptions import NotOpenSSLWarning
-warnings.filterwarnings("ignore", category=NotOpenSSLWarning)
+try:
+    from urllib3.exceptions import NotOpenSSLWarning
+except ImportError:
+    NotOpenSSLWarning = None
+
+if NotOpenSSLWarning is not None:
+    warnings.filterwarnings("ignore", category=NotOpenSSLWarning)
 
 from selenium import webdriver
 from selenium.webdriver.chrome.service import Service
@@ -15,15 +20,13 @@ from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.common.action_chains import ActionChains
+from selenium.webdriver.common.actions.wheel_input import ScrollOrigin
 from selenium.common.exceptions import NoSuchWindowException, WebDriverException, TimeoutException
-from selenium.common.exceptions import StaleElementReferenceException, JavascriptException
+from selenium.common.exceptions import StaleElementReferenceException
 import time
 
-import os, sys, platform
-from pathlib import Path
-from selenium import webdriver
-from selenium.webdriver.chrome.options import Options
-from selenium.webdriver.chrome.service import Service
+import os
+import platform
 from typing import Optional
 
 YAMAPS_URLS_FILE = "./Urls/yamaps_urls.txt"
@@ -104,94 +107,60 @@ def _float_from_text(text: str):
         return float(m2.group(1))
     return None
 
-def extract_summary(driver):
+
+def extract_summary_fast(driver):
     """
-    Возвращает (rating_avg, ratings_count, reviews_count) с текущей страницы.
-    Сначала пробуем явные селекторы, затем разные fallback-и, в т.ч. regex по HTML.
+    Неблокирующее чтение summary.
+
+    Не использует driver.page_source: на второй SPA-странице Яндекс Карт
+    эта команда может ждать фоновой загрузки и не отдавать управление.
     """
     rating_avg = None
     ratings_count = None
     reviews_count = None
 
     try:
-        r_block = driver.find_elements(By.CSS_SELECTOR, "div.business-summary-rating-badge-view__rating")
-        if r_block:
-            rating_avg = _float_from_text(r_block[0].inner_text if hasattr(r_block[0], "inner_text") else r_block[0].text)
-
-        r_span = driver.find_elements(By.CSS_SELECTOR, "span.business-rating-amount-view._summary")
-        if r_span:
-            ratings_count = _num_from_text(r_span[0].text)
-
-        h2 = driver.find_elements(By.CSS_SELECTOR, "h2.card-section-header__title._wide")
-        if h2:
-            reviews_count = _num_from_text(h2[0].text)
+        elements = driver.find_elements(
+            By.CSS_SELECTOR,
+            "div.business-summary-rating-badge-view__rating",
+        )
+        if elements:
+            rating_avg = _float_from_text(
+                elements[0].text
+            )
     except Exception:
         pass
 
-    if reviews_count is None:
-        try:
-            h2_any = driver.find_elements(By.CSS_SELECTOR, "h2.card-section-header__title, h2[class*='card-section-header__title']")
-            for el in h2_any:
-                t = (el.text or "").lower()
-                if "отзыв" in t:
-                    reviews_count = _num_from_text(el.text)
-                    if reviews_count:
-                        break
-        except Exception:
-            pass
-
-    if reviews_count is None:
-        try:
-            candidates = driver.find_elements(By.XPATH, "//*[self::a or self::div or self::span][contains(translate(., 'ОТЗЫВЫ', 'отзывы'), 'отзывы')]")
-            for el in candidates:
-                txt = (el.text or "").replace("\xa0", " ").strip()
-                m = re.search(r"отзыв[а-я]*[^0-9]*([\d\s]+)", txt, flags=re.I)
-                if not m:
-                    m = re.search(r"Отзывы[^0-9]*([\d\s]+)", txt, flags=re.I)
-                if m:
-                    try:
-                        reviews_count = int(m.group(1).replace(" ", ""))
-                        break
-                    except Exception:
-                        continue
-        except Exception:
-            pass
-
-    html = driver.page_source
-
-    if rating_avg is None:
-        m = re.search(r'Рейтинг[^0-9]*?(\d+[,\.\u202F]\d+)', html)
-        if m:
-            rating_avg = float(m.group(1).replace("\u202f", "").replace(",", "."))
-        else:
-            m2 = re.search(
-                r'business-summary-rating-badge-view__rating-text">(\d)</span>.*?_separator.*?</span>.*?business-summary-rating-badge-view__rating-text">(\d)',
-                html, re.S
+    try:
+        elements = driver.find_elements(
+            By.CSS_SELECTOR,
+            "span.business-rating-amount-view._summary",
+        )
+        if elements:
+            ratings_count = _num_from_text(
+                elements[0].text
             )
-            if m2:
-                rating_avg = float(f"{m2.group(1)}.{m2.group(2)}")
+    except Exception:
+        pass
 
-    if ratings_count is None:
-        m = re.search(r'class="business-rating-amount-view _summary"[^>]*>\s*([\d\s]+)\s+оцен', html, re.I)
-        if m:
-            try:
-                ratings_count = int(m.group(1).replace(" ", ""))
-            except Exception:
-                pass
+    try:
+        headers = driver.find_elements(
+            By.CSS_SELECTOR,
+            "h2.card-section-header__title, "
+            "h2[class*='card-section-header__title']",
+        )
 
-    if reviews_count is None:
-        m = re.search(r'>\s*([\d\s]+)\s+отзыв(?:ов|а)?\s*<', html, re.I)
-        if not m:
-            m = re.search(r'Отзывы[^0-9]{0,12}([\d\s]+)<', html, re.I)
-        if not m:
-            m = re.search(r'data-qa="reviews-count"[^>]*>\s*([\д\s]+)\s*<', html, re.I)
-        if m:
-            try:
-                reviews_count = int(m.group(1).replace("\u202f", "").replace(" ", ""))
-            except Exception:
-                pass
+        for header in headers:
+            text = (header.text or "").strip()
+
+            if "отзыв" in text.lower():
+                reviews_count = _num_from_text(text)
+                break
+    except Exception:
+        pass
 
     return rating_avg, ratings_count, reviews_count
+
 
 def parse_rating(aria_label: str):
     if not aria_label:
@@ -254,54 +223,138 @@ def setup_driver() -> webdriver.Chrome:
     drv.implicitly_wait(0)
     return drv
 
-def ensure_window(drv: webdriver.Chrome) -> bool:
+def ensure_window(
+    drv: webdriver.Chrome,
+    attempts: int = 10,
+) -> bool:
+    """
+    Во время SPA-перехода window_handles может временно вернуть
+    пустой список или ошибку, хотя окно остаётся открытым.
+    """
+    for _ in range(attempts):
+        try:
+            _ = drv.current_window_handle
+            _ = drv.current_url
+            return True
+        except (NoSuchWindowException, WebDriverException):
+            time.sleep(0.3)
+
+    return False
+
+def extract_organization_id(url: str) -> str:
     try:
-        return bool(drv.window_handles)
+        path = unquote(urlparse(url).path)
+        match = re.search(r"/org/[^/]+/(\d+)", path)
+        return match.group(1) if match else ""
     except Exception:
-        return False
+        return ""
+
+
+def _first_visible_review_card(driver):
+    cards = driver.find_elements(
+        By.CSS_SELECTOR,
+        "div.business-review-view",
+    )
+
+    for card in cards:
+        try:
+            if driver.execute_script(
+                """
+                const el = arguments[0];
+
+                if (!el || !document.contains(el)) {
+                    return false;
+                }
+
+                const rect = el.getBoundingClientRect();
+                const style = getComputedStyle(el);
+
+                return (
+                    rect.width > 0
+                    && rect.height > 0
+                    && rect.bottom > 0
+                    && rect.top < window.innerHeight
+                    && style.display !== 'none'
+                    && style.visibility !== 'hidden'
+                );
+                """,
+                card,
+            ):
+                return card
+        except Exception:
+            continue
+
+    return None
+
 
 def safe_get(drv: webdriver.Chrome, url: str) -> bool:
+    """
+    Неблокирующий переход между организациями.
+
+    document.readyState не используем: у Яндекс Карт он может долго
+    оставаться loading, хотя новая организация уже открыта.
+    """
+    expected_id = extract_organization_id(url)
+    previous_card = _first_visible_review_card(drv)
+
     try:
-        drv.get(url)
+        print("  navigation started")
+
+        drv.execute_script(
+            "window.location.assign(arguments[0]);",
+            url,
+        )
+
+        if expected_id:
+            WebDriverWait(drv, WAIT_TIMEOUT).until(
+                lambda d: extract_organization_id(
+                    d.current_url or ""
+                ) == expected_id
+            )
+
+        print(f"  URL changed: {drv.current_url}")
+
+        # Ждём, пока карточка предыдущей организации исчезнет
+        # или станет невидимой.
+        if previous_card is not None:
+            WebDriverWait(drv, WAIT_TIMEOUT).until(
+                lambda d: _old_card_is_gone(
+                    previous_card
+                )
+            )
+
+        # Ждём уже видимую карточку новой организации.
+        WebDriverWait(drv, WAIT_TIMEOUT).until(
+            lambda d: _first_visible_review_card(d)
+            is not None
+        )
+
+        print("  new review panel is ready")
         return True
-    except (NoSuchWindowException, WebDriverException):
+
+    except TimeoutException:
+        print(
+            f"  navigation timeout, current URL: "
+            f"{drv.current_url}"
+        )
         return False
 
-def get_scroll_container(driver):
-    """
-    ИСПРАВЛЕНО: больше не передаём Python-элемент в execute_script.
-    Контейнер находится целиком на стороне JS; добавлен ретрай на случай
-    динамической перерисовки DOM (устраняет StaleElementReferenceException).
-    """
-    WebDriverWait(driver, WAIT_TIMEOUT).until(
-        EC.presence_of_element_located((By.CSS_SELECTOR, "div.business-review-view"))
-    )
-    js = """
-        const first = document.querySelector('div.business-review-view');
-        function isScrollable(e){
-            if(!e) return false;
-            const s = getComputedStyle(e);
-            return /(auto|scroll)/.test(s.overflowY);
-        }
-        let el = first;
-        while (el){
-            if (isScrollable(el)) return el;
-            el = el.parentElement;
-        }
-        return document.scrollingElement || document.body;
-    """
-    last_exc = None
-    for _ in range(6):
-        try:
-            const_el = driver.execute_script(js)
-            if const_el: 
-                return const_el
-        except (StaleElementReferenceException, JavascriptException) as e:
-            last_exc = e
-            time.sleep(0.2)
-    if last_exc:
-        raise last_exc
-    return driver.execute_script("return document.scrollingElement || document.body;")
+    except (NoSuchWindowException, WebDriverException) as exc:
+        print(
+            f"  navigation error: "
+            f"{type(exc).__name__}: {exc}"
+        )
+        return False
+
+
+def _old_card_is_gone(card) -> bool:
+    try:
+        return not card.is_displayed()
+    except StaleElementReferenceException:
+        return True
+    except Exception:
+        return True
+
 
 def inject_perf_css(driver):
     try:
@@ -316,31 +369,118 @@ def inject_perf_css(driver):
     except (NoSuchWindowException, WebDriverException):
         pass
 
-def autoscroll_burst(driver, container, ms: int):
-    try:
-        driver.execute_async_script("""
+
+
+def scroll_reviews_with_wheel(driver, delta_y: int = 900):
+    """
+    Прокручивает именно панель под видимой карточкой реальным wheel-событием.
+    Не зависит от того, какой scroll-container Яндекс оставил в DOM.
+    """
+    card = _first_visible_review_card(driver)
+
+    if card is None:
+        return {
+            "before": 0,
+            "after": 0,
+            "moved": False,
+            "scrollHeight": 0,
+            "clientHeight": 0,
+        }
+
+    before = driver.execute_script(
+        """
+        let el = arguments[0];
+
+        while (el && el !== document.body) {
+            const style = getComputedStyle(el);
+            const canScroll =
+                el.scrollHeight > el.clientHeight + 20
+                && (
+                    style.overflowY === 'auto'
+                    || style.overflowY === 'scroll'
+                    || style.overflowY === 'overlay'
+                );
+
+            if (canScroll) {
+                return {
+                    element: el,
+                    top: el.scrollTop,
+                    height: el.scrollHeight,
+                    client: el.clientHeight
+                };
+            }
+
+            el = el.parentElement;
+        }
+
+        const root =
+            document.scrollingElement || document.body;
+
+        return {
+            element: root,
+            top: root.scrollTop,
+            height: root.scrollHeight,
+            client: root.clientHeight
+        };
+        """,
+        card,
+    )
+
+    scroll_element = before["element"]
+    before_top = before["top"]
+
+    origin = ScrollOrigin.from_element(card)
+
+    ActionChains(driver).scroll_from_origin(
+        origin,
+        0,
+        delta_y,
+    ).perform()
+
+    time.sleep(1)
+
+    after_top = driver.execute_script(
+        "return arguments[0].scrollTop;",
+        scroll_element,
+    )
+
+    # Fallback: если wheel не сдвинул панель, меняем scrollTop
+    # найденного родителя напрямую.
+    if after_top == before_top:
+        after_top = driver.execute_script(
+            """
             const box = arguments[0];
-            const dur = arguments[1] | 0;
-            const done = arguments[2];
-            const step = () => {
-                box.scrollTop = Math.min(box.scrollTop + box.clientHeight * 1.35, box.scrollHeight);
-            };
-            const t0 = performance.now();
-            let rafId = 0;
-            const tick = () => {
-                step();
-                if ((performance.now() - t0) < dur &&
-                    (box.scrollTop + box.clientHeight + 4) < box.scrollHeight) {
-                    rafId = requestAnimationFrame(tick);
-                } else {
-                    cancelAnimationFrame(rafId);
-                    done(box.scrollTop);
-                }
-            };
-            requestAnimationFrame(tick);
-        """, container, ms)
-    except (NoSuchWindowException, WebDriverException):
-        pass
+            const step = Math.max(
+                box.clientHeight * 0.9,
+                700
+            );
+
+            box.scrollTop = Math.min(
+                box.scrollTop + step,
+                box.scrollHeight - box.clientHeight
+            );
+
+            box.dispatchEvent(
+                new Event('scroll', {bubbles: true})
+            );
+
+            return box.scrollTop;
+            """,
+            scroll_element,
+        )
+
+    result = {
+        "before": before_top,
+        "after": after_top,
+        "moved": after_top > before_top,
+        "scrollHeight": before["height"],
+        "clientHeight": before["client"],
+    }
+
+    print(f"  wheel scroll: {result}")
+    return result
+
+
 
 def expand_all_visible(driver, scope=None):
     root = scope if scope is not None else driver
@@ -416,7 +556,7 @@ def set_sort_newest_yamaps(driver, attempts: int = 3) -> bool:
             return True
     return False
 
-def extract_review(review_el, driver):
+def extract_review(review_el):
     author = ""
     try:
         author = review_el.find_element(By.CSS_SELECTOR, 'a.business-review-view__link span[itemprop="name"]').text.strip()
@@ -463,7 +603,7 @@ def collect_visible_batch(driver, seen: set, out: list, cutoff_date) -> tuple[in
     for c in cards:
         try:
             expand_all_visible(driver, c)
-            item = extract_review(c, driver)
+            item = extract_review(c)
 
             if not (item.get("text") or "").strip():
                 continue
@@ -508,6 +648,7 @@ def main():
         urls = [FALLBACK_URL]
 
     Path(OUT_CSV_REVIEWS).parent.mkdir(parents=True, exist_ok=True)
+    Path(OUT_CSV_SUMMARY).parent.mkdir(parents=True, exist_ok=True)
 
     f_rev = open(OUT_CSV_REVIEWS, "w", newline="", encoding="utf-8")
     f_sum = open(OUT_CSV_SUMMARY, "w", newline="", encoding="utf-8")
@@ -522,12 +663,13 @@ def main():
             print(f"[{i}/{len(urls)}] {url}")
 
             if not safe_get(driver, url):
-                if not safe_get(driver, url):
-                    print("  skipping: unable to open URL")
-                    continue
+                print("  skipping: unable to open URL")
+                continue
 
             if not ensure_window(driver):
-                print("  skipping: Browser window unavailable")
+                print(
+                    "  browser window check failed after retries"
+                )
                 continue
 
             try:
@@ -541,71 +683,87 @@ def main():
             current = driver.current_url or url
             organization = extract_organization_from_url(current) or ""
 
-            try:
-                try:
-                    h2 = driver.find_elements(By.CSS_SELECTOR, "h2.card-section-header__title._wide")
-                    if not h2:
-                        tabs = driver.find_elements(By.CSS_SELECTOR, '[role="tablist"] [role="tab"]')
-                        for t in tabs:
-                            if "отзыв" in (t.text or "").lower():
-                                driver.execute_script("arguments[0].scrollIntoView({block:'center'});", t)
-                                driver.execute_script("arguments[0].click();", t)
-                                WebDriverWait(driver, 8).until(
-                                    EC.presence_of_element_located((By.CSS_SELECTOR, "h2.card-section-header__title._wide"))
-                                )
-                                break
-                except Exception:
-                    pass
+            # Summary читаем после скролла.
+            rating_avg = None
+            ratings_count = None
+            reviews_count = None
 
-                rating_avg, ratings_count, reviews_count = extract_summary(driver)
-            except Exception:
-                rating_avg = ratings_count = reviews_count = None
-
-            w_sum.writerow({
-                "organization": organization,
-                "platform": PLATFORM,
-                "rating_avg": rating_avg if rating_avg is not None else "",
-                "ratings_count": ratings_count if ratings_count is not None else "",
-                "reviews_count": reviews_count if reviews_count is not None else "",
-            })
-
-            try:
-                WebDriverWait(driver, WAIT_TIMEOUT).until(
-                    EC.presence_of_element_located((By.CSS_SELECTOR, "div.business-review-view"))
-                )
-            except TimeoutException:
-                print("  there is no review block")
-                continue
+            print("  review panel accepted; starting parser")
 
             inject_perf_css(driver)
-            set_sort_newest_yamaps(driver)
 
-            container = get_scroll_container(driver)
+            print("  setting newest sort")
+            sort_newest_ok = set_sort_newest_yamaps(driver)
+            print(f"  newest sort: {sort_newest_ok}")
+
+            print("  preparing scroll")
+            print("  scroll is ready")
             cutoff_date = datetime.now().date() - timedelta(days=365*YEARS_LIMIT)
 
             seen, batch = set(), []
             idle = 0
-            stop_by_age = False
 
             expand_all_visible(driver)
-            _, met_old = collect_visible_batch(driver, seen, batch, cutoff_date)
-            if met_old:
-                stop_by_age = True
+            collect_visible_batch(
+                driver,
+                seen,
+                batch,
+                cutoff_date,
+            )
 
-            for _ in range(BURSTS):
-                if stop_by_age:
-                    break
+            # Не завершаем работу до первого скролла:
+            # старый отзыв может быть закреплённым.
+            for burst_number in range(BURSTS):
                 prev_len = len(batch)
-                autoscroll_burst(driver, container, BURST_MS)
+
+                scroll_result = scroll_reviews_with_wheel(
+                    driver,
+                    delta_y=900,
+                )
+
+                time.sleep(2)
                 expand_all_visible(driver)
-                added, met_old = collect_visible_batch(driver, seen, batch, cutoff_date)
+
+                added, met_old = collect_visible_batch(
+                    driver,
+                    seen,
+                    batch,
+                    cutoff_date,
+                )
+
+                print(
+                    f"  scroll {burst_number + 1}/{BURSTS}: "
+                    f"moved={scroll_result['moved']}, "
+                    f"added={added}, "
+                    f"total={len(batch)}, "
+                    f"old={met_old}"
+                )
+
+                # После реального скролла можно завершаться,
+                # когда список дошёл до старых отзывов.
                 if met_old:
-                    stop_by_age = True
-                if added == 0 and len(batch) == prev_len:
+                    print(
+                        f"  stop: reached reviews older than "
+                        f"{cutoff_date.isoformat()}"
+                    )
+                    break
+
+                if (
+                    not scroll_result["moved"]
+                    or (
+                        added == 0
+                        and len(batch) == prev_len
+                    )
+                ):
                     idle += 1
                 else:
                     idle = 0
+
                 if idle >= IDLE_LIMIT:
+                    print(
+                        f"  stop: no movement/new reviews after "
+                        f"{IDLE_LIMIT} attempts"
+                    )
                     break
 
             for r in batch:
@@ -618,7 +776,41 @@ def main():
                     "organization": organization,
                 })
 
-            print(f"  summary: rating={rating_avg}, ratings={ratings_count}, reviews={reviews_count} | reviews collected: {len(batch)} | org={organization or '-'}")
+            print("  reading summary after scroll")
+            rating_avg, ratings_count, reviews_count = (
+                extract_summary_fast(driver)
+            )
+
+            w_sum.writerow({
+                "organization": organization,
+                "platform": PLATFORM,
+                "rating_avg": (
+                    rating_avg
+                    if rating_avg is not None
+                    else ""
+                ),
+                "ratings_count": (
+                    ratings_count
+                    if ratings_count is not None
+                    else ""
+                ),
+                "reviews_count": (
+                    reviews_count
+                    if reviews_count is not None
+                    else ""
+                ),
+            })
+
+            f_rev.flush()
+            f_sum.flush()
+
+            print(
+                f"  summary: rating={rating_avg}, "
+                f"ratings={ratings_count}, "
+                f"reviews={reviews_count} | "
+                f"reviews collected: {len(batch)} | "
+                f"org={organization or '-'}"
+            )
 
     finally:
         try:
