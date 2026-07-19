@@ -716,20 +716,36 @@ class MainWindow(QMainWindow):
         self._adjust_filters_width()
 
     def _notify(self, title: str, message: str):
-        """Уведомление: plyer → QSystemTrayIcon → QMessageBox → лог."""
-        try:
-            if plyer_notification is not None:
-                plyer_notification.notify(title=title, message=message, timeout=10)
-                return
-        except Exception:
-            pass
+        self._append_log(
+            f"[NOTIFY] {title}: {message}"
+        )
+        self.statusBar().showMessage(
+            f"{title}: {message}",
+            10000,
+        )
 
         try:
-            QMessageBox.information(self, title, message)
-        except Exception:
-            pass
-        self.statusBar().showMessage(f"{title}: {message}")
-        self._append_log(f"[NOTIFY] {title}: {message}")
+            if plyer_notification is not None:
+                plyer_notification.notify(
+                    title=title,
+                    message=message,
+                    timeout=10,
+                )
+        except Exception as error:
+            self._append_log(
+                f"[NOTIFY] plyer error: {error}"
+            )
+
+        try:
+            QMessageBox.information(
+                self,
+                title,
+                message,
+            )
+        except Exception as error:
+            self._append_log(
+                f"[NOTIFY] QMessageBox error: {error}"
+            )
 
     @staticmethod
     def _find_col(df: pd.DataFrame, candidates: List[str]) -> Optional[str]:
@@ -880,24 +896,81 @@ class MainWindow(QMainWindow):
             return
 
         MAX_TOASTS = 10
-        if len(changes) > MAX_TOASTS:
-            self._notify("Обновления сводки", f"Изменений: {len(changes)} (см. лог).")
-            for p, o, d in changes:
-                parts = []
-                if d.get("delta_count"):
-                    parts.append(f"+{d['delta_count']} комм.")
-                if d.get("old_rating") is not None and d.get("new_rating") is not None:
-                    if abs(d["new_rating"] - d["old_rating"]) >= 0.01:
-                        parts.append(f"рейтинг {d['old_rating']:.2f} -> {d['new_rating']:.2f}")
-                self._append_log(f"[CHANGE] {p} — {o}: " + (", ".join(parts) if parts else "change"))
-            return
+        lines: List[str] = []
+        total_new_reviews = 0
+        rating_changes_count = 0
 
-        for p, o, d in changes:
-            if d.get("delta_count"):
-                self._notify("Новые комментарии", f"{p} — {o}: +{d['delta_count']}")
-            if d.get("old_rating") is not None and d.get("new_rating") is not None:
-                if abs(d["new_rating"] - d["old_rating"]) >= 0.01:
-                    self._notify("Изменение рейтинга", f"{p} — {o}: {d['old_rating']:.2f} -> {d['new_rating']:.2f}")
+        for platform_name, organization, data in changes:
+            parts: List[str] = []
+
+            delta_count = data.get("delta_count")
+            old_rating = data.get("old_rating")
+            new_rating = data.get("new_rating")
+
+            if delta_count:
+                total_new_reviews += delta_count
+                parts.append(
+                    f"+{delta_count} новых отзывов"
+                )
+
+            if (
+                old_rating is not None
+                and new_rating is not None
+                and abs(new_rating - old_rating) >= 0.01
+            ):
+                rating_changes_count += 1
+                parts.append(
+                    f"рейтинг {old_rating:.2f} → "
+                    f"{new_rating:.2f}"
+                )
+
+            if parts:
+                lines.append(
+                    f"{platform_name} — "
+                    f"{organization}: "
+                    + ", ".join(parts)
+                )
+
+        # Чтобы уведомление не стало слишком большим,
+        # показываем только первые несколько организаций.
+        MAX_LINES = 7
+        visible_lines = lines[:MAX_LINES]
+
+        if len(lines) > MAX_LINES:
+            visible_lines.append(
+                f"Ещё изменений: "
+                f"{len(lines) - MAX_LINES}. "
+                f"Подробности в логе."
+            )
+
+        title_parts = []
+
+        if total_new_reviews:
+            title_parts.append(
+                f"{total_new_reviews} новых отзывов"
+            )
+
+        if rating_changes_count:
+            title_parts.append(
+                f"{rating_changes_count} изменений рейтинга"
+            )
+
+        title = (
+            "Обновления: " + ", ".join(title_parts)
+            if title_parts
+            else "Обновления отзывов"
+        )
+
+        message = "\n".join(visible_lines)
+
+        # Одно общее уведомление вместо множества отдельных.
+        self._notify(title, message)
+
+        # Полный список сохраняем в лог.
+        for line in lines:
+            self._append_log(
+                f"[CHANGE] {line}"
+            )
 
     def _adjust_filters_width(self):
         cw = self.centralWidget().width() if self.centralWidget() else self.width()
