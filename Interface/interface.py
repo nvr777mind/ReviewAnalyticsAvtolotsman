@@ -77,19 +77,9 @@ def _app_dir() -> Path:
     return Path(".").resolve()
 
 def _runtime_path(py_rel_path: Path) -> Path:
-    """
-    К путям типа Parsers/foo.py вернёт:
-      - dev: Parsers/foo.py
-      - build: <base>/Parsers/foo.exe
-    """
     return (_app_dir() / py_rel_path).with_suffix(".exe") if _is_frozen() else py_rel_path
 
 def _script_cmd(py_rel_path: Path) -> tuple[str, list[str]]:
-    """
-    Что запускать в QProcess:
-      - dev: python <py>
-      - build: <exe> (без аргументов)
-    """
     if _is_frozen():
         return (str(_runtime_path(py_rel_path)), [])
     return (sys.executable, [str(py_rel_path)])
@@ -164,9 +154,6 @@ class DataFrameModel(QAbstractTableModel):
             return self._headers.index(name)
         except ValueError:
             return None
-
-    def refresh_need_answer_index(self):
-        self._need_answer_idx = self.column_name_to_index("need_answer")
 
 class TextWrapDelegate(QStyledItemDelegate):
     def __init__(self, table: QTableView,
@@ -396,10 +383,6 @@ class DateEditWithDash(QDateEdit):
             self.calendarWidget().setCurrentPage(self._start_year, self._start_month)
         return super().eventFilter(obj, event)
 
-    def set_start_page(self, year: int, month: int = 1):
-        self._start_year, self._start_month = year, month
-
-
 class MainWindow(QMainWindow):
     def __init__(self, df: Optional[pd.DataFrame] = None):
         super().__init__()
@@ -451,15 +434,6 @@ class MainWindow(QMainWindow):
         self._rmin.setRange(0, 1000); self._rmax.setRange(0, 1000)
         self._rmin.setSpecialValueText("—"); self._rmax.setSpecialValueText("—")
         self._rmin.setValue(0); self._rmax.setValue(0)
-
-        self._date_from.setDisplayFormat("yyyy-MM-dd")
-        self._date_to.setDisplayFormat("yyyy-MM-dd")
-        self._date_from.setSpecialValueText("—")
-        self._date_to.setSpecialValueText("—")
-        self._date_from.setDateRange(QDate(1900, 1, 1), QDate(2100, 12, 31))
-        self._date_to.setDateRange(QDate(1900, 1, 1), QDate(2100, 12, 31))
-        self._date_from.setDate(self._date_from.minimumDate())
-        self._date_to.setDate(self._date_to.minimumDate())
 
         self._filters_group = QGroupBox("Фильтры")
         self._filters_group.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Expanding)
@@ -686,8 +660,6 @@ class MainWindow(QMainWindow):
         self._csv_toggle_btn.clicked.connect(self._on_toggle_csv)
 
         self._running = False
-        self._scraper_procs: List[Tuple[str, QProcess]] = []
-        self._scrapers_done = 0
         self._current_proc: Optional[QProcess] = None
         self._incr_scrapers_cache: List[Tuple[str, Path]] = []
 
@@ -749,7 +721,6 @@ class MainWindow(QMainWindow):
 
     @staticmethod
     def _find_col(df: pd.DataFrame, candidates: List[str]) -> Optional[str]:
-        """Находит первую подходящую колонку из списка кандидатов (без строгого учёта регистра)."""
         for c in candidates:
             if c in df.columns:
                 return c
@@ -769,22 +740,7 @@ class MainWindow(QMainWindow):
         except Exception:
             return None
 
-    @staticmethod
-    def _to_int(x: Any) -> Optional[int]:
-        if x is None:
-            return None
-        s = str(x).strip().replace(" ", "").replace(",", "")
-        try:
-            return int(float(s))
-        except Exception:
-            return None
-
     def _count_new_since(self) -> Dict[Tuple[str, str], int]:
-        """
-        Возвращает словарь {(platform, organization): count} по строкам из
-        Csv/Reviews/NewReviews/all_new_since.csv. Если файла нет или колонки
-        не найдены — возвращает пустой словарь.
-        """
         path = Path("Csv/Reviews/NewReviews/all_new_since.csv")
         if not path.exists():
             self._append_log("[NOTIFY] all_new_since.csv not found - there is nothing to calculate the number of new reviews from.")
@@ -811,12 +767,6 @@ class MainWindow(QMainWindow):
         return out
 
     def _send_incremental_notifications(self):
-        """
-        Уведомления после инкрементального слияния:
-        - количество новых комментариев берём из all_new_since.csv (считаем строки);
-        - изменения рейтинга определяем по разнице all_new_summary.csv vs all_summary.csv;
-        - после сравнения перезаписываем all_summary.csv содержимым all_new_summary.csv.
-        """
         since_counts = self._count_new_since()
 
         new_path = Path("Csv/Summary/NewSummary/all_new_summary.csv")
@@ -896,81 +846,24 @@ class MainWindow(QMainWindow):
             return
 
         MAX_TOASTS = 10
-        lines: List[str] = []
-        total_new_reviews = 0
-        rating_changes_count = 0
+        if len(changes) > MAX_TOASTS:
+            self._notify("Обновления сводки", f"Изменений: {len(changes)} (см. лог).")
+            for p, o, d in changes:
+                parts = []
+                if d.get("delta_count"):
+                    parts.append(f"+{d['delta_count']} комм.")
+                if d.get("old_rating") is not None and d.get("new_rating") is not None:
+                    if abs(d["new_rating"] - d["old_rating"]) >= 0.01:
+                        parts.append(f"рейтинг {d['old_rating']:.2f} -> {d['new_rating']:.2f}")
+                self._append_log(f"[CHANGE] {p} — {o}: " + (", ".join(parts) if parts else "change"))
+            return
 
-        for platform_name, organization, data in changes:
-            parts: List[str] = []
-
-            delta_count = data.get("delta_count")
-            old_rating = data.get("old_rating")
-            new_rating = data.get("new_rating")
-
-            if delta_count:
-                total_new_reviews += delta_count
-                parts.append(
-                    f"+{delta_count} новых отзывов"
-                )
-
-            if (
-                old_rating is not None
-                and new_rating is not None
-                and abs(new_rating - old_rating) >= 0.01
-            ):
-                rating_changes_count += 1
-                parts.append(
-                    f"рейтинг {old_rating:.2f} → "
-                    f"{new_rating:.2f}"
-                )
-
-            if parts:
-                lines.append(
-                    f"{platform_name} — "
-                    f"{organization}: "
-                    + ", ".join(parts)
-                )
-
-        # Чтобы уведомление не стало слишком большим,
-        # показываем только первые несколько организаций.
-        MAX_LINES = 7
-        visible_lines = lines[:MAX_LINES]
-
-        if len(lines) > MAX_LINES:
-            visible_lines.append(
-                f"Ещё изменений: "
-                f"{len(lines) - MAX_LINES}. "
-                f"Подробности в логе."
-            )
-
-        title_parts = []
-
-        if total_new_reviews:
-            title_parts.append(
-                f"{total_new_reviews} новых отзывов"
-            )
-
-        if rating_changes_count:
-            title_parts.append(
-                f"{rating_changes_count} изменений рейтинга"
-            )
-
-        title = (
-            "Обновления: " + ", ".join(title_parts)
-            if title_parts
-            else "Обновления отзывов"
-        )
-
-        message = "\n".join(visible_lines)
-
-        # Одно общее уведомление вместо множества отдельных.
-        self._notify(title, message)
-
-        # Полный список сохраняем в лог.
-        for line in lines:
-            self._append_log(
-                f"[CHANGE] {line}"
-            )
+        for p, o, d in changes:
+            if d.get("delta_count"):
+                self._notify("Новые комментарии", f"{p} — {o}: +{d['delta_count']}")
+            if d.get("old_rating") is not None and d.get("new_rating") is not None:
+                if abs(d["new_rating"] - d["old_rating"]) >= 0.01:
+                    self._notify("Изменение рейтинга", f"{p} — {o}: {d['old_rating']:.2f} -> {d['new_rating']:.2f}")
 
     def _adjust_filters_width(self):
         cw = self.centralWidget().width() if self.centralWidget() else self.width()
@@ -1406,6 +1299,35 @@ class MainWindow(QMainWindow):
         if missing:
             QMessageBox.critical(self, "Скрипты не найдены",
                                 "Отсутствуют файлы:\n" + "\n".join(missing))
+            return
+        
+        incremental_files = [
+            Path("Csv/Reviews/NewReviews/new_2gis_reviews.csv"),
+            Path("Csv/Reviews/NewReviews/new_yamaps_reviews.csv"),
+            Path("Csv/Reviews/NewReviews/new_gmaps_reviews.csv"),
+            Path("Csv/Reviews/NewReviews/all_new_since.csv"),
+
+            Path("Csv/Summary/NewSummary/new_2gis_summary.csv"),
+            Path("Csv/Summary/NewSummary/new_yamaps_summary.csv"),
+            Path("Csv/Summary/NewSummary/new_gmaps_summary.csv"),
+            Path("Csv/Summary/NewSummary/all_new_summary.csv"),
+        ]
+
+        try:
+            for file_path in incremental_files:
+                if file_path.exists():
+                    file_path.unlink()
+                    self._append_log(
+                        f"[INCR] Удалён старый временный файл: "
+                        f"{file_path}"
+                    )
+        except Exception as error:
+            QMessageBox.critical(
+                self,
+                "Ошибка очистки",
+                f"Не удалось очистить временные файлы:\n"
+                f"{error}",
+            )
             return
 
         self._running = True

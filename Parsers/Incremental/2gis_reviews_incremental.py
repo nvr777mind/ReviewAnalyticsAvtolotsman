@@ -1,831 +1,1422 @@
-import csv, re, time, unicodedata, tempfile, shutil
-from typing import Optional, Tuple, List, Dict
-from datetime import datetime, timedelta, date
-from pathlib import Path
-
+import csv
+import os
+import platform
+import re
+import shutil
+import subprocess
+import tempfile
+import time
 import warnings
-from urllib3.exceptions import NotOpenSSLWarning
-warnings.filterwarnings("ignore", category=NotOpenSSLWarning)
+from datetime import date, datetime, timedelta
+from pathlib import Path
+from typing import Dict, List, Optional, Set, Tuple
 
 from selenium import webdriver
+from selenium.common.exceptions import (
+    NoSuchWindowException,
+    SessionNotCreatedException,
+    TimeoutException,
+    WebDriverException,
+)
+from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.common.by import By
-from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.common.action_chains import ActionChains
 from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
-from selenium.common.exceptions import (
-    NoSuchWindowException, WebDriverException, TimeoutException, SessionNotCreatedException
+
+try:
+    from selenium.webdriver.common.actions.wheel_input import ScrollOrigin
+except ImportError:
+    ScrollOrigin = None
+
+try:
+    from urllib3.exceptions import NotOpenSSLWarning
+except ImportError:
+    NotOpenSSLWarning = None
+
+if NotOpenSSLWarning:
+    warnings.filterwarnings("ignore", category=NotOpenSSLWarning)
+
+
+def find_project_root() -> Path:
+    current_file = Path(__file__).resolve()
+
+    for parent in current_file.parents:
+        if (
+            (parent / "Urls").is_dir()
+            and (parent / "Csv").is_dir()
+            and (parent / "Drivers").is_dir()
+        ):
+            return parent
+
+    raise FileNotFoundError(
+        "Project root not found: expected folders "
+        "'Urls', 'Csv' and 'Drivers'."
+    )
+
+
+BASE_DIR = find_project_root()
+URLS_FILE = BASE_DIR / "Urls" / "2gis_urls.txt"
+
+SOURCE_REVIEWS_CSV = (
+    BASE_DIR / "Csv" / "Reviews" / "all_reviews.csv"
 )
 
-import os, sys, platform
+NEW_REVIEWS_CSV = (
+    BASE_DIR
+    / "Csv"
+    / "Reviews"
+    / "NewReviews"
+    / "new_2gis_reviews.csv"
+)
 
-DGIS_URLS_FILE       = "./Urls/2gis_urls.txt"
-FALLBACK_URL         = ("https://2gis.ru/penza/search/%D0%B0%D0%B2%D1%82%D0%BE%D0%BB%D0%BE%D1%86%D0%BC%D0%B0%D0%BD/"
-                        "firm/70000001057701394/44.973806%2C53.220685/tab/reviews?m=44.975027%2C53.220456%2F17.63")
+NEW_SUMMARY_CSV = (
+    BASE_DIR
+    / "Csv"
+    / "Summary"
+    / "NewSummary"
+    / "new_2gis_summary.csv"
+)
 
-ALL_REVIEWS_CSV      = "Csv/Reviews/all_reviews.csv"
-SUMMARY_BASE_CSV     = "Csv/Summary/2gis_summary.csv"
+FALLBACK_URL = (
+    "https://2gis.ru/penza/search/"
+    "%D0%B0%D0%B2%D1%82%D0%BE%D0%BB%D0%BE%D1%86%D0%BC%D0%B0%D0%BD/"
+    "firm/70000001057701394/44.973806%2C53.220685/tab/reviews"
+    "?m=44.975027%2C53.220456%2F17.63"
+)
 
-OUT_CSV_REV_DELTA    = "Csv/Reviews/NewReviews/2gis_new_since.csv"
-OUT_CSV_SUMMARY_NEW  = "Csv/Summary/NewSummary/2gis_summary_new.csv"
+DRIVER_PATH = (
+    BASE_DIR / "Drivers" / "Windows" / "yandexdriver.exe"
+    if platform.system() == "Windows"
+    else BASE_DIR / "Drivers" / "MacOS" / "yandexdriver"
+)
 
-PLATFORM             = "2GIS"
+WAIT_TIMEOUT = 20
+SCROLL_HARD_LIMIT = 1000
+SCROLL_PAUSE = 1.1
+IDLE_LIMIT = 4
+YEARS_LIMIT = 2
+PLATFORM_NAME = "2GIS"
 
-def find_yandex_browser() -> Optional[Path]:
-    env = os.environ.get("YANDEX_BROWSER_PATH")
-    if env and Path(env).is_file():
-        return Path(env)
+REVIEW_CARD_SEL = "div._1rowqpjv"
+AUTHOR_SEL = "span._19h0cqe"
+DATE_SEL = "span._10c0hgu"
+RATING_SEL = "div._1u60bur > div._y10azs"
+TEXT_SELECTORS = ("a._co8kyiw", "div._49x36f > a._1msln3t")
+SCROLL_CONTAINER_SEL = "div._8hh56jx[data-scroll='true']"
 
-    if platform.system() == "Windows":
-        candidates = [
-            Path.home() / "AppData" / "Local" / "Yandex" / "YandexBrowser" / "Application" / "browser.exe",
-            Path(os.environ.get("LOCALAPPDATA", "")) / "Yandex" / "YandexBrowser" / "Application" / "browser.exe",
-            Path(os.environ.get("ProgramFiles", "")) / "Yandex" / "YandexBrowser" / "Application" / "browser.exe",
-            Path(os.environ.get("ProgramFiles(x86)", "")) / "Yandex" / "YandexBrowser" / "Application" / "browser.exe",
-        ]
-        for p in candidates:
-            if p.is_file():
-                return p
-        return None
-    else:
-        p = Path("/Applications/Yandex.app/Contents/MacOS/Yandex")
-        return p if p.is_file() else None
+SUMMARY_RATING_SEL = "div._1tam240"
+SUMMARY_RATINGS_COUNT_SEL = "div._1y88ofn"
+SUMMARY_REVIEWS_COUNT_SEL = "div._4v626nk > span"
 
-yb = find_yandex_browser()
-
-SPEED_PROFILE = "safe"
-HEADLESS      = False
-
-if SPEED_PROFILE == "safe":
-    WAIT_TIMEOUT   = 15
-    BURSTS         = 28
-    BURST_MS       = 900
-    IDLE_LIMIT     = 3
-    BETWEEN_BURSTS_SOFT_WAIT = 0.6
-elif SPEED_PROFILE == "ultra":
-    WAIT_TIMEOUT   = 8
-    BURSTS         = 12
-    BURST_MS       = 520
-    IDLE_LIMIT     = 1
-    BETWEEN_BURSTS_SOFT_WAIT = 0.25
-else:
-    WAIT_TIMEOUT   = 10
-    BURSTS         = 18
-    BURST_MS       = 700
-    IDLE_LIMIT     = 2
-    BETWEEN_BURSTS_SOFT_WAIT = 0.4
-
-ENFORCE_DATE_CUTOFF = False
-YEARS_LIMIT_HINT    = 2
-
-if platform.system() == "Windows":
-    YANDEXDRIVER_PATH = "Drivers/Windows/yandexdriver.exe"
-else:
-    YANDEXDRIVER_PATH = "Drivers/MacOS/yandexdriver"
-
-PROFILE_DIR           = str(Path.home() / ".yandex-2gis-scraper")
-
-AUTHOR_SEL       = "span._wrdavn > span._16s5yj36"
-DATE_SEL         = "div._m80g57y > div._a5f6uz"
-RATING_FILL_SEL  = "div._1m0m6z5 > div._1fkin5c"
-TEXT_BLOCK_SEL   = "div._49x36f > a._1wlx08h"
-ALT_TEXT_SEL     = "div._49x36f > a._1msln3t"
-SCROLL_CONTAINER_SEL = "div._1rkbbi0x[data-scroll='true']"
-
-SUM_RATING_SEL        = "div._1tam240"
-SUM_RATINGS_COUNT_SEL = "div._1y88ofn"
-SUM_REVIEWS_COUNT_SEL = "div._qvsf7z > span._1xhlznaa"
-
-ORGANIZATION_MAP_FIRMID: Dict[str, str] = {
+ORGANIZATION_BY_FIRM_ID = {
     "70000001057701394": "avtolotsman_probeg",
     "70000001086881480": "avtolotsman",
-    "5911502791905673":  "kia_avtolotsman",
-    "5911502792028090":  "mazda_avtolotsman",
-    "70000001083460643": "moskvich_avtolotsman",
-    "5911502792136575":  "shkoda_avtolotsman",
+    "70000001083460643": "avtolotsman",
+    "5911502791905673": "kia_avtolotsman",
+    "5911502792136575": "shkoda_avtolotsman",
     "70000001071267471": "avtolotsman_deteyling",
     "70000001083645814": "changan_avtolotsman",
-    "70000001101283058": "liven_avtolotsman",
 }
 
-MONTHS_RU = {"января":1,"февраля":2,"марта":3,"апреля":4,"мая":5,"июня":6,
-             "июля":7,"августа":8,"сентября":9,"октября":10,"ноября":11,"декабря":12}
-RELATIVE_MAP = {"сегодня": 0, "вчера": -1}
+RU_MONTHS = {
+    "января": 1, "февраля": 2, "марта": 3, "апреля": 4,
+    "мая": 5, "июня": 6, "июля": 7, "августа": 8,
+    "сентября": 9, "октября": 10, "ноября": 11, "декабря": 12,
+}
 
-def norm_text(s: str) -> str:
-    if not s: return ""
-    x = unicodedata.normalize("NFKC", s).lower()
-    x = re.sub(r"\s+", " ", x).strip()
-    x = re.sub(r"[«»\"'”“„‚…‐-–—·•/\\\(\)\[\]\{\},.;:!?]", "", x)
-    x = re.sub(r"\s+", " ", x).strip()
-    return x
 
-def norm_author(s: str) -> str:
-    if not s: return ""
-    x = unicodedata.normalize("NFKC", s).lower()
-    x = re.sub(r"\s+", " ", x).strip()
-    return x
+def find_yandex_browser() -> Optional[Path]:
+    custom = os.environ.get("YANDEX_BROWSER_PATH")
+    if custom and Path(custom).expanduser().is_file():
+        return Path(custom).expanduser()
 
-def text_signature(s: str, length: int = 180) -> str:
-    return norm_text(s)[:length]
+    candidates = (
+        [
+            Path.home() / "AppData/Local/Yandex/YandexBrowser/Application/browser.exe",
+            Path(os.environ.get("LOCALAPPDATA", ""))
+            / "Yandex/YandexBrowser/Application/browser.exe",
+        ]
+        if platform.system() == "Windows"
+        else [Path("/Applications/Yandex.app/Contents/MacOS/Yandex")]
+    )
+    return next((path for path in candidates if path.is_file()), None)
 
-def parse_ru_date_to_iso(s: Optional[str]) -> Optional[str]:
-    if not s: return None
-    s = s.strip().lower()
-    s = re.sub(r"редакт.*$", "", s).strip()
-    s = re.split(r"[,\u2022•]", s)[0].strip()
 
-    if s in RELATIVE_MAP:
-        d = datetime.now().date() + timedelta(days=RELATIVE_MAP[s])
-        return d.isoformat()
+def stop_stale_drivers() -> None:
+    if platform.system() != "Windows":
+        return
+    for name in ("yandexdriver.exe", "chromedriver.exe"):
+        try:
+            subprocess.run(
+                ["taskkill", "/F", "/IM", name],
+                timeout=2,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=False,
+            )
+        except Exception:
+            pass
 
-    mrel = re.match(r"^(\d{1,2})\s+([а-яё]+)\s+назад$", s, flags=re.I)
-    if mrel:
-        qty = int(mrel.group(1)); unit = mrel.group(2)
-        days_map = {
-            "день":1, "дня":1, "дней":1,
-            "неделя":7, "недели":7, "недель":7, "неделю":7,
-            "месяц":30, "месяца":30, "месяцев":30,
-            "год":365, "года":365, "лет":365,
-        }
-        step = None
-        for k, v in days_map.items():
-            if unit.startswith(k[:4]): step = v; break
-        if step:
-            d = datetime.now().date() - timedelta(days=qty * step)
-            return d.isoformat()
 
-    m = re.match(r"^(\d{1,2})\s+([а-яё]+)(?:\s+(\d{4}))?(?:\s*г\.?)?$", s, flags=re.I)
-    if m:
-        day = int(m.group(1)); mon = MONTHS_RU.get(m.group(2))
-        year = int(m.group(3)) if m.group(3) else datetime.now().year
-        if mon:
-            try: return datetime(year, mon, day).date().isoformat()
-            except: return None
+def create_driver() -> Tuple[webdriver.Chrome, str]:
+    browser = find_yandex_browser()
+    if browser is None:
+        raise FileNotFoundError("Yandex Browser not found")
+    if not DRIVER_PATH.is_file():
+        raise FileNotFoundError(f"Yandex Driver not found: {DRIVER_PATH}")
 
-    m2 = re.match(r"^(\d{1,2})\.(\d{1,2})\.(\d{2,4})$", s)
-    if m2:
-        d, mo, y = int(m2.group(1)), int(m2.group(2)), int(m2.group(3))
-        if y < 100: y += 2000
-        try: return datetime(y, mo, d).date().isoformat()
-        except: return None
+    stop_stale_drivers()
+    profile = tempfile.mkdtemp(prefix="2gis_profile_")
 
-    return None
+    options = Options()
+    options.binary_location = str(browser)
+    options.page_load_strategy = "eager"
+    for arg in (
+        "--no-first-run",
+        "--no-default-browser-check",
+        "--no-sandbox",
+        "--disable-dev-shm-usage",
+        "--disable-extensions",
+        "--disable-blink-features=AutomationControlled",
+        "--lang=ru-RU,ru",
+        "--start-maximized",
+    ):
+        options.add_argument(arg)
 
-def inject_perf_css(driver):
+    options.add_argument(f"--user-data-dir={profile}")
+    options.add_experimental_option(
+        "excludeSwitches", ["enable-automation", "enable-logging"]
+    )
+
+    driver = webdriver.Chrome(
+        service=Service(str(DRIVER_PATH)),
+        options=options,
+    )
+    driver.set_page_load_timeout(35)
+    driver.set_script_timeout(35)
+    driver.implicitly_wait(0)
+
     try:
-        driver.execute_script("""
-            if (!document.getElementById('no-anim-style')) {
-              var st = document.createElement('style'); st.id='no-anim-style';
-              st.innerHTML='*{animation:none!important;transition:none!important;} html{scroll-behavior:auto!important;}';
-              document.head.appendChild(st);
+        driver.execute_cdp_cmd(
+            "Page.addScriptToEvaluateOnNewDocument",
+            {
+                "source": (
+                    "Object.defineProperty("
+                    "navigator,'webdriver',{get:()=>undefined});"
+                )
+            },
+        )
+    except Exception:
+        pass
+
+    return driver, profile
+
+
+def close_driver(driver: Optional[webdriver.Chrome], profile: Optional[str]) -> None:
+    try:
+        if driver:
+            driver.quit()
+    except Exception:
+        pass
+    if profile:
+        shutil.rmtree(profile, ignore_errors=True)
+
+
+def firm_id_from_url(url: str) -> str:
+    match = re.search(r"/firm/(\d+)", url or "")
+    return match.group(1) if match else ""
+
+
+def organization_from_url(url: str) -> str:
+    return ORGANIZATION_BY_FIRM_ID.get(firm_id_from_url(url), "")
+
+
+def is_visible(driver, element) -> bool:
+    try:
+        return bool(
+            driver.execute_script(
+                """
+                const el=arguments[0];
+                if(!el||!document.contains(el)) return false;
+                const r=el.getBoundingClientRect(), s=getComputedStyle(el);
+                return r.width>0&&r.height>0
+                    &&s.display!=='none'&&s.visibility!=='hidden';
+                """,
+                element,
+            )
+        )
+    except Exception:
+        return False
+
+
+def reset_all_scroll(driver) -> None:
+    try:
+        driver.execute_script(
+            """
+            for(const el of document.querySelectorAll(
+                '[data-scroll="true"],main,section,article,div'
+            )){
+                if(el.scrollHeight>el.clientHeight+20) el.scrollTop=0;
             }
-        """)
-    except: pass
-
-def block_heavy_assets(driver):
-    """CDP: блокируем тяжёлые форматы, чтобы 2ГИС грузился быстрее."""
-    try:
-        driver.execute_cdp_cmd("Network.enable", {})
-        driver.execute_cdp_cmd("Network.setBlockedURLs", {"urls": [
-            "*.jpg","*.jpeg","*.png","*.gif","*.webp","*.svg",
-            "*.woff","*.woff2","*.ttf","*.otf",
-            "*tile*","*tiles*","*mapbox*","*yastatic*/*maps*","*static-maps*","*ads*"
-        ]})
+            window.scrollTo(0,0);
+            """
+        )
     except Exception:
         pass
 
-def build_options(profile_dir: Optional[str] = None) -> Options:
-    opts = Options()
-    if yb:
-        opts.binary_location = str(yb)
-    if HEADLESS:
-        opts.add_argument("--headless=new")
-    opts.add_argument("--start-maximized")
-    opts.add_argument("--no-sandbox")
-    opts.add_argument("--disable-dev-shm-usage")
-    opts.add_argument("--lang=ru-RU,ru")
-    opts.page_load_strategy = "eager"
 
-    opts.add_argument("--no-first-run")
-    opts.add_argument("--no-default-browser-check")
-    opts.add_argument("--disable-extensions")
-
-    use_dir = profile_dir or PROFILE_DIR
-    opts.add_argument(f"--user-data-dir={use_dir}")
-    opts.add_argument("--profile-directory=Default")
-
-    opts.add_experimental_option("excludeSwitches", ["enable-automation", "enable-logging"])
-    opts.add_experimental_option("useAutomationExtension", False)
-
-    opts.add_argument("--blink-settings=imagesEnabled=false")
-    prefs = {
-        "profile.managed_default_content_settings.images": 2,
-        "profile.managed_default_content_settings.media_stream": 2,
-    }
-    opts.add_experimental_option("prefs", prefs)
-    return opts
-
-def setup_driver_with_fallback(prev_tmp_dir: Optional[str] = None) -> Tuple[webdriver.Chrome, Optional[str]]:
-    """Создаёт драйвер: сначала с постоянным профилем, при залочке — с (единым) временным профилем."""
-    if yb and not Path(str(yb)).exists():
-        print(f"[2GIS WARN] No Yandex Browser on the way: {str(yb)} — Let's try the system Chrome.")
-    if not Path(YANDEXDRIVER_PATH).is_file():
-        raise FileNotFoundError(f"No Yandex Driver: {YANDEXDRIVER_PATH}")
-
-    service = Service(executable_path=YANDEXDRIVER_PATH)
-
+def navigate(driver, url: str) -> bool:
+    expected_id = firm_id_from_url(url)
     try:
-        drv = webdriver.Chrome(service=service, options=build_options(PROFILE_DIR))
-        tmp_dir = None
-    except SessionNotCreatedException as e:
-        print(f"[2GIS WARN] {e.__class__.__name__}: {e}. Switching to a temporary profile.")
-        tmp_dir = prev_tmp_dir or tempfile.mkdtemp(prefix="2gis_tmp_profile_")
-        drv = webdriver.Chrome(service=service, options=build_options(tmp_dir))
+        previous_url = driver.current_url or ""
+        old_cards = driver.find_elements(By.CSS_SELECTOR, REVIEW_CARD_SEL)
+        old_marker = old_cards[0] if old_cards else None
 
-    drv.set_page_load_timeout(90); drv.set_script_timeout(90); drv.implicitly_wait(0)
-    try:
-        drv.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {
-            "source": "Object.defineProperty(navigator, 'webdriver', {get: () => undefined});"
-        })
-    except:
-        pass
-    block_heavy_assets(drv)
-    try:
-        drv.get("about:blank")
-    except Exception:
-        pass
-    time.sleep(0.3)
-    return drv, tmp_dir
-
-def _cleanup_tmp_dir(tmp_dir: Optional[str]):
-    if tmp_dir:
+        print("  navigation started")
         try:
-            p = Path(tmp_dir)
-            if p.exists():
-                shutil.rmtree(p, ignore_errors=True)
+            driver.execute_script("window.stop();")
         except Exception:
             pass
 
-def ensure_window(drv) -> bool:
-    try: return bool(drv.window_handles)
-    except: return False
+        reset_all_scroll(driver)
+        driver.execute_script("window.location.assign(arguments[0]);", url)
 
-def safe_get(drv, url: str) -> bool:
-    try:
-        drv.get(url); return True
-    except (NoSuchWindowException, WebDriverException):
-        return False
+        WebDriverWait(driver, WAIT_TIMEOUT).until(
+            lambda drv: (
+                (drv.current_url or "") != previous_url
+                and (not expected_id or expected_id in (drv.current_url or ""))
+            )
+        )
+        print(f"  URL changed: {driver.current_url}")
 
-def navigate_with_retry(driver_ctx: dict, url: str) -> bool:
-    """
-    driver_ctx = {"drv": WebDriver, "tmp_dir": str|None}
-    Открыть url; если сессия умерла — пересоздать драйвер (с тем же temp-профилем) и повторить.
-    """
-    try:
-        driver_ctx["drv"].get(url)
+        if old_marker is not None:
+            try:
+                WebDriverWait(driver, 8).until(
+                    lambda drv: not drv.execute_script(
+                        "return document.contains(arguments[0]);", old_marker
+                    )
+                )
+            except Exception:
+                pass
+
+        WebDriverWait(driver, WAIT_TIMEOUT).until(
+            lambda drv: bool(
+                drv.find_elements(
+                    By.CSS_SELECTOR,
+                    f"{SCROLL_CONTAINER_SEL},"
+                    f"{SUMMARY_RATING_SEL},"
+                    "a[href*='/tab/reviews']",
+                )
+            )
+        )
+
+        reset_all_scroll(driver)
+        print("  2GIS page is ready")
         return True
-    except (NoSuchWindowException, WebDriverException):
+
+    except TimeoutException:
+        current = ""
         try:
-            driver_ctx["drv"].quit()
+            current = driver.current_url or ""
         except Exception:
             pass
-        new_drv, new_tmp = setup_driver_with_fallback(driver_ctx.get("tmp_dir"))
-        driver_ctx["drv"] = new_drv
-        driver_ctx["tmp_dir"] = new_tmp
-        try:
-            driver_ctx["drv"].get(url)
-            return True
-        except Exception:
-            return False
+        print(f"  navigation timeout: {current}")
+        return bool(current and (not expected_id or expected_id in current))
 
-def click_cookies_if_any(driver):
-    btn_xps = [
-        "//*[self::button or self::span][contains(., 'Понятно')]",
-        "//*[self::button or self::span][contains(., 'Принять')]",
-        "//*[self::button or self::span][contains(., 'Хорошо')]",
-        "//*[self::button or self::span][contains(., 'Ок') or contains(., 'OK')]",
-        "//*[self::button or self::span][contains(., 'Согласен')]",
-    ]
-    for xp in btn_xps:
-        try:
-            btn = WebDriverWait(driver, 2).until(EC.element_to_be_clickable((By.XPATH, xp)))
-            driver.execute_script("arguments[0].click();", btn)
-            break
-        except: pass
-
-def ensure_reviews_tab(driver):
-    try:
-        tabs = driver.find_elements(By.XPATH, "//*[self::a or self::span or self::div][contains(., 'Отзывы')]")
-        for t in tabs[:3]:
-            try:
-                driver.execute_script("arguments[0].scrollIntoView({block:'center'});", t)
-                driver.execute_script("arguments[0].click();", t)
-                time.sleep(0.25)
-                break
-            except: pass
-    except: pass
-
-def switch_to_reviews_iframe(driver) -> bool:
-    try:
-        iframes = driver.find_elements(By.TAG_NAME, "iframe")
-        for frame in iframes:
-            try:
-                driver.switch_to.frame(frame); time.sleep(0.15)
-                if len([el for el in driver.find_elements(By.CSS_SELECTOR, "div, span, p") if len((el.text or '').strip()) > 50]) > 0:
-                    return True
-                driver.switch_to.default_content()
-            except:
-                driver.switch_to.default_content(); continue
+    except (NoSuchWindowException, WebDriverException) as error:
+        print(f"  navigation error: {type(error).__name__}: {error}")
         return False
-    except: return False
 
-def wait_for_reviews_content(driver):
-    def _present(drv):
+
+def accept_cookies(driver) -> None:
+    try:
+        clicked = driver.execute_script(
+            """
+            const allowed=['понятно','принять','хорошо','ок','согласен'];
+            for(const el of document.querySelectorAll('button,[role="button"]')){
+                const r=el.getBoundingClientRect();
+                if(r.width<=0||r.height<=0) continue;
+                const t=(el.innerText||el.textContent||
+                         el.getAttribute('aria-label')||'').trim().toLowerCase();
+                if(allowed.some(x=>t===x||t.startsWith(x+' '))){
+                    el.click(); return t;
+                }
+            }
+            return '';
+            """
+        )
+        if clicked:
+            print(f"  cookie button clicked: {clicked!r}")
+    except Exception:
+        pass
+
+
+def subtract_months(value: date, months: int) -> date:
+    year, month = value.year, value.month - months
+    while month <= 0:
+        month += 12
+        year -= 1
+
+    next_month = date(year + (month == 12), month % 12 + 1, 1)
+    last_day = (next_month - timedelta(days=1)).day
+    return date(year, month, min(value.day, last_day))
+
+
+def parse_review_date(raw: Optional[str]) -> Optional[str]:
+    if not raw:
+        return None
+
+    text = re.sub(r"редакт.*$", "", raw.strip().lower()).strip()
+    text = re.split(r"[,•]", text)[0].strip()
+    today = datetime.now().date()
+
+    direct = {"сегодня": 0, "вчера": 1, "позавчера": 2}
+    if text in direct:
+        return (today - timedelta(days=direct[text])).isoformat()
+
+    singular = {
+        "день назад": ("days", 1),
+        "неделю назад": ("weeks", 1),
+        "месяц назад": ("months", 1),
+        "год назад": ("years", 1),
+    }
+
+    unit = ""
+    amount = 0
+    if text in singular:
+        unit, amount = singular[text]
+    else:
+        match = re.match(r"^(\d+)\s+([а-яё]+)\s+назад$", text)
+        if match:
+            amount = int(match.group(1))
+            word = match.group(2)
+            if word.startswith("дн"):
+                unit = "days"
+            elif word.startswith("недел"):
+                unit = "weeks"
+            elif word.startswith("месяц"):
+                unit = "months"
+            elif word.startswith(("год", "лет")):
+                unit = "years"
+
+    if unit == "days":
+        return (today - timedelta(days=amount)).isoformat()
+    if unit == "weeks":
+        return (today - timedelta(weeks=amount)).isoformat()
+    if unit == "months":
+        return subtract_months(today, amount).isoformat()
+    if unit == "years":
         try:
-            return (len(drv.find_elements(By.CSS_SELECTOR, TEXT_BLOCK_SEL)) > 0 or
-                    len(drv.find_elements(By.CSS_SELECTOR, ALT_TEXT_SEL)) > 0)
-        except: return False
-    WebDriverWait(driver, WAIT_TIMEOUT).until(_present)
+            return today.replace(year=today.year - amount).isoformat()
+        except ValueError:
+            return today.replace(year=today.year - amount, day=28).isoformat()
 
-def _is_visible(driver, el) -> bool:
-    try:
-        w,h = driver.execute_script("const r=arguments[0].getBoundingClientRect();return [r.width,r.height];", el)
-        return w>0 and h>0
-    except: return False
+    match = re.match(
+        r"^(\d{1,2})\s+([а-яё]+)(?:\s+(\d{4}))?(?:\s*г\.?)?$", text
+    )
+    if match:
+        day = int(match.group(1))
+        month = RU_MONTHS.get(match.group(2))
+        year = int(match.group(3)) if match.group(3) else today.year
+        if month:
+            try:
+                parsed = date(year, month, day)
+                if not match.group(3) and parsed > today:
+                    parsed = parsed.replace(year=year - 1)
+                return parsed.isoformat()
+            except ValueError:
+                return None
 
-def get_scroll_container(driver):
-    try:
-        cand = [c for c in driver.find_elements(By.CSS_SELECTOR, SCROLL_CONTAINER_SEL) if _is_visible(driver, c)]
-        if cand:
-            best = max(cand, key=lambda el: (driver.execute_script("return arguments[0].clientHeight;", el) or 0))
-            try: driver.execute_script("arguments[0].focus({preventScroll:true});", best)
-            except: pass
-            return best
-    except: pass
-    try:
-        return driver.execute_script("return document.scrollingElement || document.body;")
-    except: 
+    match = re.match(r"^(\d{1,2})\.(\d{1,2})\.(\d{2,4})$", text)
+    if match:
+        day, month, year = map(int, match.groups())
+        if year < 100:
+            year += 2000
         try:
-            return driver.find_element(By.TAG_NAME, "body")
-        except:
+            return date(year, month, day).isoformat()
+        except ValueError:
             return None
 
-def get_scroll_height(driver, container) -> int:
-    if container is None:
-        return 0
-    try: return int(driver.execute_script("return arguments[0].scrollHeight;", container) or 0)
-    except: return int(driver.execute_script("return (document.scrollingElement||document.body).scrollHeight;") or 0)
+    return None
 
-def autoscroll_burst(driver, container, ms: int):
-    """Агрессивная прокрутка короткими шагами (чаще, но без длинных пауз)."""
-    if container is None:
-        return
+
+def get_cutoff_date() -> date:
+    today = datetime.now().date()
     try:
-        driver.execute_script("arguments[0].scrollIntoView({block:'center'});", container)
-        driver.execute_script("arguments[0].focus({preventScroll:true});", container)
-    except: pass
-    deadline = time.time() + (ms/1000.0)
-    while time.time() < deadline:
-        try:
-            ch = int(driver.execute_script("return arguments[0].clientHeight;", container) or 600)
-            step = max(240, int(ch*0.9))
-            driver.execute_script(
-                "arguments[0].scrollTop = Math.min(arguments[0].scrollTop + arguments[1], arguments[0].scrollHeight);",
-                container, step
+        return today.replace(year=today.year - YEARS_LIMIT)
+    except ValueError:
+        return today.replace(year=today.year - YEARS_LIMIT, day=28)
+
+
+def normalize_key_part(value: Optional[str]) -> str:
+    return re.sub(
+        r"\s+",
+        " ",
+        (value or "").strip().lower(),
+    )
+
+
+def organization_key(value: Optional[str]) -> str:
+    return normalize_key_part(value)
+
+
+def stored_review_key(
+    author: Optional[str],
+    date_iso: Optional[str],
+    text: Optional[str],
+) -> Tuple[str, str, str]:
+    return (
+        normalize_key_part(author),
+        (date_iso or "")[:10],
+        normalize_key_part(text),
+    )
+
+
+def parse_stored_date(
+    value: Optional[str],
+) -> Optional[date]:
+    if not value:
+        return None
+
+    try:
+        return date.fromisoformat(
+            value.strip()[:10]
+        )
+    except ValueError:
+        return None
+
+
+def load_existing_reviews(
+    csv_path: Path,
+) -> Tuple[
+    Dict[str, Set[Tuple[str, str, str]]],
+    Dict[str, date],
+]:
+    keys_by_org: Dict[
+        str,
+        Set[Tuple[str, str, str]],
+    ] = {}
+    latest_by_org: Dict[str, date] = {}
+
+    if (
+        not csv_path.exists()
+        or csv_path.stat().st_size == 0
+    ):
+        return keys_by_org, latest_by_org
+
+    with csv_path.open(
+        "r",
+        newline="",
+        encoding="utf-8",
+    ) as source_file:
+        reader = csv.DictReader(source_file)
+
+        for row in reader:
+            if (
+                row.get("platform")
+                or ""
+            ).strip() != PLATFORM_NAME:
+                continue
+
+            organization = (
+                row.get("organization")
+                or ""
+            ).strip()
+
+            if not organization:
+                continue
+
+            parsed_date = parse_stored_date(
+                row.get("date_iso")
+                or row.get("dateISO")
+                or row.get("date")
             )
-        except:
-            try:
-                driver.execute_script("window.scrollBy(0, Math.floor(window.innerHeight*0.9));")
-            except:
-                pass
-        time.sleep(0.12)
 
-def _rating_from_spans_count(card) -> Optional[float]:
-    try:
-        for fill in card.find_elements(By.CSS_SELECTOR, RATING_FILL_SEL):
-            stars = fill.find_elements(By.TAG_NAME, "span")
-            if 1 <= len(stars) <= 5:
-                return float(len(stars))
-    except: pass
-    return None
-
-def _looks_like_header(text: str, author: str) -> bool:
-    s = (text or "").strip()
-    if not s: return True
-    low = s.lower()
-    if low.startswith(("официальный ответ", "ответ владельца")): return True
-    if author and low.startswith(author.lower()): return True
-    if re.search(r"\bотзыв(ов)?\b", low): return True
-    return False
-
-def normalize_review_text(s: str) -> str:
-    s = re.sub(r"\s+", " ", s)
-    s = re.sub(r"(Полезно.*|Читать целиком.*|Свернуть.*|Официальный ответ.*)$", "", s, flags=re.I)
-    s = re.sub(r"([.!?…])\s*\d{1,3}$", r"\1", s)
-    return s.strip()
-
-def _get_text_by_selectors(card) -> str:
-    try:
-        el = card.find_element(By.CSS_SELECTOR, TEXT_BLOCK_SEL)
-        t = (el.text or "").strip()
-        if t: return t
-    except: pass
-    try:
-        el = card.find_element(By.CSS_SELECTOR, ALT_TEXT_SEL)
-        t = (el.text or "").strip()
-        if t: return t
-    except: pass
-    return ""
-
-def find_review_text(card, author: str) -> str:
-    tt = normalize_review_text(_get_text_by_selectors(card))
-    if not tt: return ""
-    low = tt.lower()
-    if "официальный ответ" in low or "ответ владельца" in low: return ""
-    if _looks_like_header(tt, author): return ""
-    return tt if len(tt) >= 2 else ""
-
-def extract_review_from_card(card, driver) -> dict:
-    author = ""
-    try:
-        author_el = card.find_element(By.CSS_SELECTOR, AUTHOR_SEL)
-        author = (author_el.get_attribute("title") or author_el.text or "").strip()
-    except: pass
-
-    date_raw, date_iso = "", ""
-    try:
-        date_els = card.find_elements(
-            By.XPATH,
-            ".//div[contains(@class,'_m80g57y')]//div[contains(@class,'_a5f6uz')][not(ancestor::*[contains(@class,'_sgs1pz')])]"
-        ) or card.find_elements(By.CSS_SELECTOR, DATE_SEL)
-        if date_els:
-            date_raw = (date_els[0].text or "").strip()
-            date_iso = parse_ru_date_to_iso(date_raw) or ""
-            if not date_iso:
-                try:
-                    time_el = date_els[0].find_element(By.CSS_SELECTOR, "time")
-                    dt = (time_el.get_attribute("datetime") or "").strip()
-                    if dt: date_iso = dt[:10]
-                except: pass
-    except: pass
-
-    rating = _rating_from_spans_count(card)
-    text = find_review_text(card, author)
-    text = re.sub(r"[\r\n]+", " ", text).strip()
-
-    return {"author": author, "rating": rating, "date_raw": date_raw, "date_iso": date_iso, "text": text}
-
-def extract_organization_from_url(url: str) -> Optional[str]:
-    m = re.search(r"/firm/(\d+)", url)
-    if not m: return None
-    firm_id = m.group(1)
-    return ORGANIZATION_MAP_FIRMID.get(firm_id)
-
-def extract_summary_2gis(driver) -> Tuple[Optional[float], Optional[int], Optional[int]]:
-    try: driver.switch_to.default_content()
-    except: pass
-    rating_avg = ratings_count = reviews_count = None
-    try:
-        el = driver.find_elements(By.CSS_SELECTOR, SUM_RATING_SEL)
-        if el:
-            t = el[0].text.strip().replace("\xa0"," ")
-            m = re.search(r"(\d+[,\.\u202F]\d+|\d+)", t)
-            if m: rating_avg = float(m.group(1).replace("\u202f","").replace(",", "."))
-    except: pass
-    try:
-        els = driver.find_elements(By.CSS_SELECTOR, SUM_RATINGS_COUNT_SEL)
-        for e in els:
-            m = re.search(r"(\d[\d\s]*)", (e.text or "").replace("\xa0"," "))
-            if m: ratings_count = int(m.group(1).replace(" ","")); break
-    except: pass
-    try:
-        el = driver.find_elements(By.CSS_SELECTOR, SUM_REVIEWS_COUNT_SEL)
-        if el:
-            m = re.search(r"(\d[\d\s]*)", (el[0].text or "").replace("\xa0"," "))
-            if m: reviews_count = int(m.group(1).replace(" ",""))
-    except: pass
-    if reviews_count is None:
-        try:
-            html = driver.page_source
-            m = re.search(r'<div class="_qvsf7z"[^>]*>.*?<span class="_1xhlznaa">\s*([\d\s]+)\s*</span>', html, re.S)
-            if m: reviews_count = int(m.group(1).replace("\u202f","").replace(" ",""))
-        except: pass
-    return rating_avg, ratings_count, reviews_count
-
-def find_review_cards(driver):
-    try: return driver.find_elements(By.CSS_SELECTOR, "div._1k5soqfl")
-    except: return []
-
-def _try_parse_date(s: Optional[str]) -> Optional[date]:
-    if not s: return None
-    s = s.strip()[:10]
-    try: return datetime.fromisoformat(s).date()
-    except Exception: pass
-    m = re.match(r"^(\d{1,2})\.(\d{1,2})\.(\d{2,4})$", s)
-    if m:
-        d, mo, y = int(m.group(1)), int(m.group(2)), int(m.group(3))
-        if y < 100: y += 2000
-        try: return date(y, mo, d)
-        except Exception: return None
-    return None
-
-def normalize_org(name: str) -> str:
-    if not name: return ""
-    s = unicodedata.normalize("NFKC", name).lower()
-    s = re.sub(r"[«»\"'”“„‚,]", " ", s)
-    s = " ".join(s.split())
-    return s
-
-def load_latest_dates_by_org(all_reviews_csv: str, platform: str) -> Dict[str, date]:
-    latest: Dict[str, date] = {}
-    p = Path(all_reviews_csv)
-    if not p.exists(): return latest
-    with p.open("r", encoding="utf-8", newline="") as f:
-        reader = csv.DictReader(f)
-        date_cols = ["date_iso", "dateISO", "date", "Date", "DATE"]
-        for row in reader:
-            try:
-                if (row.get("platform") or "").strip() != platform: continue
-                org_key = normalize_org((row.get("organization") or "").strip())
-                if not org_key: continue
-                d_str = next((row[c] for c in date_cols if c in row and row[c]), None)
-                d = _try_parse_date(d_str)
-                if not d: continue
-                prev = latest.get(org_key)
-                if prev is None or d > prev: latest[org_key] = d
-            except Exception:
-                continue
-    return latest
-
-def _int_from_any(x) -> Optional[int]:
-    if x is None: return None
-    s = str(x).replace("\u202f", " ").replace("\xa0", " ").strip()
-    m = re.search(r"(\d[\d\s]*)", s)
-    if not m: return None
-    try: return int(m.group(1).replace(" ", ""))
-    except Exception: return None
-
-def load_prev_reviews_count(summary_csv: str, platform: str) -> Dict[str, int]:
-    res: Dict[str, int] = {}
-    p = Path(summary_csv)
-    if not p.exists(): return res
-    with p.open("r", encoding="utf-8", newline="") as f:
-        reader = csv.DictReader(f)
-        for row in reader:
-            try:
-                if (row.get("platform") or "").strip() != platform: continue
-                org_key = normalize_org((row.get("organization") or "").strip())
-                if not org_key: continue
-                rc = _int_from_any(row.get("reviews_count"))
-                if rc is None: continue
-                res[org_key] = rc
-            except Exception:
-                continue
-    return res
-
-def collect_visible_batch(driver, cutoff_date: date,
-                          dedupe_index: Dict[Tuple[str,str], int],
-                          out: List[Dict]) -> Tuple[int, bool]:
-    added, met_old = 0, False
-    for card in find_review_cards(driver):
-        try:
-            item = extract_review_from_card(card, driver)
-            txt = (item.get("text") or "").strip()
-            if not txt or len(txt) < 2:
-                continue
-            if "официальный ответ" in txt.lower():
+            if parsed_date is None:
                 continue
 
-            d_iso = item.get("date_iso") or ""
-            if ENFORCE_DATE_CUTOFF and not d_iso:
-                continue
-            if d_iso:
-                try:
-                    d = datetime.fromisoformat(d_iso[:10]).date()
-                    if d <= cutoff_date:
-                        met_old = True
-                        continue
-                except Exception:
-                    pass
+            org_key = organization_key(
+                organization
+            )
 
-            key = (norm_author(item.get("author") or ""), text_signature(txt))
-            if key not in dedupe_index:
-                dedupe_index[key] = len(out)
-                out.append(item)
-                added += 1
-            else:
-                idx = dedupe_index[key]
-                cur = out[idx]
-                if not (cur.get("date_iso") or cur.get("date_raw")) and (item.get("date_iso") or item.get("date_raw")):
-                    cur["date_iso"] = item.get("date_iso") or cur.get("date_iso","")
-                    cur["date_raw"] = item.get("date_raw") or cur.get("date_raw","")
-                if cur.get("rating") is None and item.get("rating") is not None:
-                    cur["rating"] = item["rating"]
-        except Exception:
-            continue
-    return added, met_old
+            key = stored_review_key(
+                row.get("author"),
+                parsed_date.isoformat(),
+                row.get("text"),
+            )
 
-def _nz(v, zero=0):
-    return v if v not in (None, "") else zero
+            keys_by_org.setdefault(
+                org_key,
+                set(),
+            ).add(key)
 
-def soft_wait_for_growth(driver, container, prev_h: int, prev_cards: int, timeout: float) -> Tuple[int, int]:
-    """Ждём коротко прироста высоты или появления новых карточек (вместо жесткого sleep)."""
-    end = time.time() + timeout
-    last_h = prev_h
-    last_cards = prev_cards
-    while time.time() < end:
-        try:
-            last_h = get_scroll_height(driver, container)
-        except Exception:
-            pass
-        try:
-            last_cards = len(find_review_cards(driver))
-        except Exception:
-            pass
-        if (last_h > prev_h + 2) or (last_cards > prev_cards):
-            break
-        time.sleep(0.05)
-    return last_h, last_cards
+            previous = latest_by_org.get(
+                org_key
+            )
 
-def process_one_url(driver_ctx: dict,
-                    url: str,
-                    forced_org: Optional[str],
-                    cutoff_date: date
-                   ) -> Tuple[str, List[Dict], Tuple[Optional[float], Optional[int], Optional[int]]]:
-
-    drv = driver_ctx["drv"]
-
-    if not ensure_window(drv):
-        new_drv, new_tmp = setup_driver_with_fallback(driver_ctx.get("tmp_dir"))
-        driver_ctx["drv"] = drv = new_drv
-        driver_ctx["tmp_dir"] = new_tmp
-
-    if not navigate_with_retry(driver_ctx, url):
-        print(f"[2GIS WARN] safe_get failed. Skip url={url}")
-        return "", [], (None, None, None)
-
-    inject_perf_css(drv)
-    org = forced_org or extract_organization_from_url(url) or ""
-
-    try:
-        rating_avg, ratings_count, reviews_count = extract_summary_2gis(drv)
-    except Exception:
-        rating_avg = ratings_count = reviews_count = None
-
-    try: click_cookies_if_any(drv)
-    except: pass
-    try: ensure_reviews_tab(drv)
-    except: pass
-
-    switch_to_reviews_iframe(drv)
-
-    try:
-        wait_for_reviews_content(drv)
-    except TimeoutException:
-        print(f"[2GIS WARN] Timeout waiting reviews. Skip url={url}")
-        return org, [], (rating_avg, ratings_count, reviews_count)
-
-    container = get_scroll_container(drv)
-    if container is None:
-        print(f"[2GIS WARN] No scroll container. Skip url={url}")
-        return org, [], (rating_avg, ratings_count, reviews_count)
-
-    results: List[Dict] = []
-    dedupe_index: Dict[Tuple[str,str], int] = {}
-
-    idle = 0
-    stop_by_age = False
-
-    added, met_old = collect_visible_batch(drv, cutoff_date, dedupe_index, results)
-    if met_old: stop_by_age = True
-
-    for _ in range(BURSTS):
-        if stop_by_age: break
-        prev_len = len(results)
-        prev_h = get_scroll_height(drv, container)
-        prev_cards = len(find_review_cards(drv))
-
-        autoscroll_burst(drv, container, BURST_MS)
-        new_h, new_cards = soft_wait_for_growth(drv, container, prev_h, prev_cards, BETWEEN_BURSTS_SOFT_WAIT)
-
-        added, met_old = collect_visible_batch(drv, cutoff_date, dedupe_index, results)
-        if met_old: stop_by_age = True
-
-        height_grew = new_h > prev_h + 2
-        cards_grew  = new_cards > prev_cards
-        idle = 0 if (added or len(results) > prev_len or height_grew or cards_grew) else (idle + 1)
-        if idle >= IDLE_LIMIT: break
-
-    for r in results:
-        r["organization"] = org
-
-    print(f"  New ones collected: {len(results)} | org={org or '-'} | stop at the threshold: {stop_by_age}")
-    return org, results, (rating_avg, ratings_count, reviews_count)
-
-def main():
-    try:
-        urls = [u.strip() for u in Path(DGIS_URLS_FILE).read_text(encoding="utf-8").splitlines() if u.strip()]
-        if not urls: urls = [FALLBACK_URL]
-    except FileNotFoundError:
-        urls = [FALLBACK_URL]
-
-    latest_by_org = load_latest_dates_by_org(ALL_REVIEWS_CSV, PLATFORM)
-    print(f"[INFO] Threshold dates: {len(latest_by_org)} орг. | speed={SPEED_PROFILE} | headless={HEADLESS}")
-
-    prev_counts = load_prev_reviews_count(SUMMARY_BASE_CSV, PLATFORM)
-
-    Path(OUT_CSV_SUMMARY_NEW).parent.mkdir(parents=True, exist_ok=True)
-    Path(OUT_CSV_REV_DELTA).parent.mkdir(parents=True, exist_ok=True)
-
-    f_rev = open(OUT_CSV_REV_DELTA, "w", newline="", encoding="utf-8")
-    w_rev = csv.DictWriter(f_rev, fieldnames=["rating","author","date_iso","text","platform","organization"], quoting=csv.QUOTE_ALL)
-    w_rev.writeheader()
-
-    total_written_by_org: Dict[str, int] = {}
-    summary_by_org: Dict[str, Dict[str, float]] = {}
-
-    driver, tmp_dir = None, None
-    try:
-        driver, tmp_dir = setup_driver_with_fallback()
-        driver_ctx = {"drv": driver, "tmp_dir": tmp_dir}
-
-        for i, url in enumerate(urls, 1):
-            org_slug = extract_organization_from_url(url) or ""
-            org_key = normalize_org(org_slug)
-            cutoff_default = date.today() - timedelta(days=365 * YEARS_LIMIT_HINT)
-            cutoff = latest_by_org.get(org_key, cutoff_default)
-
-            print(f"[{i}/{len(urls)}] {url} -> org='{org_slug or '-'}' | threshold={cutoff.isoformat()}")
-
-            try:
-                org, reviews, (rating_avg, ratings_count, reviews_count) = process_one_url(
-                    driver_ctx, url, forced_org=org_slug, cutoff_date=cutoff
+            if (
+                previous is None
+                or parsed_date > previous
+            ):
+                latest_by_org[org_key] = (
+                    parsed_date
                 )
-            except (NoSuchWindowException, WebDriverException, TimeoutException) as e:
-                print(f"[2GIS WARN] {e.__class__.__name__}: Skip url={url}")
-                org, reviews = "", []
-                rating_avg = ratings_count = reviews_count = None
 
-            written = 0
-            for r in reviews:
-                try:
-                    w_rev.writerow({
-                        "rating":       r.get("rating"),
-                        "author":       (r.get("author") or "").strip(),
-                        "date_iso":     (r.get("date_iso") or "")[:10],
-                        "text":         (r.get("text") or "").replace("\r"," ").replace("\n"," ").strip(),
-                        "platform":     PLATFORM,
-                        "organization": (r.get("organization") or "").strip(),
-                    })
-                    written += 1
-                except Exception:
+    return keys_by_org, latest_by_org
+
+
+def first_number(text: Optional[str]) -> Optional[int]:
+    if not text:
+        return None
+    match = re.search(r"\d[\d\s\u00a0\u202f]*", text)
+    digits = re.sub(r"\D", "", match.group(0)) if match else ""
+    return int(digits) if digits else None
+
+
+def first_float(text: Optional[str]) -> Optional[float]:
+    if not text:
+        return None
+    match = re.search(r"\d+(?:[.,]\d+)?", text)
+    return float(match.group(0).replace(",", ".")) if match else None
+
+
+def extract_summary(
+    driver,
+    timeout: float = 8.0,
+) -> Tuple[
+    Optional[float],
+    Optional[int],
+    Optional[int],
+]:
+    deadline = time.monotonic() + timeout
+
+    rating_avg: Optional[float] = None
+    ratings_count: Optional[int] = None
+    reviews_count: Optional[int] = None
+
+    def visible_texts(
+        selector: str,
+    ) -> List[str]:
+        values: List[str] = []
+
+        try:
+            elements = driver.find_elements(
+                By.CSS_SELECTOR,
+                selector,
+            )
+        except Exception:
+            return values
+
+        for element in elements:
+            try:
+                if not is_visible(
+                    driver,
+                    element,
+                ):
                     continue
 
-            ok = normalize_org(org or org_slug)
-            total_written_by_org[ok] = total_written_by_org.get(ok, 0) + written
-            print(f"  new ones written: {written}")
+                value = (
+                    element.text
+                    or element.get_attribute(
+                        "aria-label"
+                    )
+                    or element.get_attribute(
+                        "title"
+                    )
+                    or ""
+                ).strip()
 
-            if ok not in summary_by_org:
-                summary_by_org[ok] = {
-                    "organization": org or org_slug or "",
-                    "rating_avg":   _nz(rating_avg, 0),
-                    "ratings_count":_nz(ratings_count, 0),
-                    "reviews_count":_nz(reviews_count, 0),
-                }
-
-    finally:
-        try: f_rev.flush(); f_rev.close()
-        except: pass
-        try:
-            if driver:
-                driver.quit()
-        except: pass
-        _cleanup_tmp_dir(tmp_dir)
-
-    with open(OUT_CSV_SUMMARY_NEW, "w", newline="", encoding="utf-8") as fsum2:
-        w2 = csv.DictWriter(fsum2, fieldnames=["organization","platform","rating_avg","ratings_count","reviews_count"], quoting=csv.QUOTE_ALL)
-        w2.writeheader()
-        for ok, data in summary_by_org.items():
-            org_label = data.get("organization","")
-            prev  = prev_counts.get(ok, 0)
-            added = total_written_by_org.get(ok, 0)
-            try:
-                w2.writerow({
-                    "organization": org_label,
-                    "platform":     PLATFORM,
-                    "rating_avg":   _nz(data.get("rating_avg")),
-                    "ratings_count":_nz(data.get("ratings_count")),
-                    "reviews_count": _nz(prev) + _nz(added),
-                })
+                if value:
+                    values.append(value)
             except Exception:
                 continue
 
-    print(f"\nDone.")
-    print(f"Reviews (2GIS) -> {OUT_CSV_REV_DELTA}")
-    print(f"Summary (new, 2GIS) -> {OUT_CSV_SUMMARY_NEW}")
-    print(f"Base summary (for the old counter) -> {SUMMARY_BASE_CSV}")
-    print(f"Threshold date base -> {ALL_REVIEWS_CSV}")
+        return values
+
+    while time.monotonic() < deadline:
+        for value in visible_texts(
+            SUMMARY_RATING_SEL
+        ):
+            parsed = first_float(value)
+
+            if (
+                parsed is not None
+                and 1.0 <= parsed <= 5.0
+            ):
+                rating_avg = parsed
+                break
+
+        for value in visible_texts(
+            SUMMARY_RATINGS_COUNT_SEL
+        ):
+            parsed = first_number(value)
+
+            if parsed is not None:
+                ratings_count = parsed
+                break
+
+        for value in visible_texts(
+            SUMMARY_REVIEWS_COUNT_SEL
+        ):
+            parsed = first_number(value)
+
+            if parsed is not None:
+                reviews_count = parsed
+                break
+
+        if rating_avg is not None:
+            break
+
+        time.sleep(0.4)
+
+    print(
+        "  summary read: "
+        f"rating={rating_avg}, "
+        f"ratings={ratings_count}, "
+        f"reviews={reviews_count}"
+    )
+
+    return (
+        rating_avg,
+        ratings_count,
+        reviews_count,
+    )
+
+
+def find_review_cards(driver, container=None) -> List:
+    try:
+        root = container or find_scroll_container(
+            driver
+        )
+
+        return root.find_elements(
+            By.CSS_SELECTOR,
+            REVIEW_CARD_SEL,
+        )
+    except Exception:
+        return []
+
+def extract_rating(card) -> Optional[float]:
+    try:
+        for element in card.find_elements(By.CSS_SELECTOR, RATING_SEL):
+            value = first_float(
+                element.get_attribute("aria-label")
+                or element.get_attribute("title")
+                or ""
+            )
+            if value is not None and 1 <= value <= 5:
+                return value
+
+            stars = element.find_elements(By.TAG_NAME, "span")
+            if 1 <= len(stars) <= 5:
+                return float(len(stars))
+    except Exception:
+        pass
+    return None
+
+
+def extract_text(card) -> str:
+    values: List[str] = []
+    for selector in TEXT_SELECTORS:
+        try:
+            values.extend(
+                element.text.strip()
+                for element in card.find_elements(By.CSS_SELECTOR, selector)
+                if element.text.strip()
+            )
+        except Exception:
+            pass
+
+    if not values:
+        return ""
+
+    text = re.sub(r"\s+", " ", max(values, key=len))
+    text = re.sub(
+        r"(Полезно.*|Читать целиком.*|Свернуть.*|Официальный ответ.*)$",
+        "",
+        text,
+        flags=re.I,
+    )
+    return text.strip()
+
+
+def extract_review(card) -> Optional[dict]:
+    try:
+        author_element = card.find_element(By.CSS_SELECTOR, AUTHOR_SEL)
+        author = (
+            author_element.get_attribute("title")
+            or author_element.text
+            or ""
+        ).strip()
+    except Exception:
+        author = ""
+
+    try:
+        date_element = card.find_element(By.CSS_SELECTOR, DATE_SEL)
+        raw_date = (
+            date_element.text
+            or date_element.get_attribute("aria-label")
+            or ""
+        ).strip()
+        date_iso = parse_review_date(raw_date) or ""
+    except Exception:
+        date_iso = ""
+
+    text = extract_text(card)
+    if not text:
+        return None
+
+    lowered = text.lower()
+    if "официальный ответ" in lowered or "ответ владельца" in lowered:
+        return None
+
+    return {
+        "rating": extract_rating(card),
+        "author": author,
+        "date_iso": date_iso,
+        "text": text,
+    }
+
+
+def collect_reviews(
+    driver,
+    container,
+    reviews: List[dict],
+    index: Dict[str, int],
+    cutoff: date,
+) -> Tuple[int, int]:
+    added = 0
+    skipped_old = 0
+
+    for card in find_review_cards(driver, container):
+        review = extract_review(card)
+        if not review or not review["date_iso"]:
+            continue
+
+        try:
+            review_date = date.fromisoformat(review["date_iso"][:10])
+        except ValueError:
+            continue
+
+        if review_date < cutoff:
+            skipped_old += 1
+            continue
+
+        key = re.sub(r"\s+", " ", review["text"].strip().lower())
+        if key not in index:
+            index[key] = len(reviews)
+            reviews.append(review)
+            added += 1
+            continue
+
+        current = reviews[index[key]]
+        if not current["author"] and review["author"]:
+            current["author"] = review["author"]
+        if current["rating"] is None and review["rating"] is not None:
+            current["rating"] = review["rating"]
+        if not current["date_iso"] and review["date_iso"]:
+            current["date_iso"] = review["date_iso"]
+
+    return added, skipped_old
+
+
+def find_scroll_container(driver):
+    try:
+        candidates = driver.find_elements(
+            By.CSS_SELECTOR,
+            SCROLL_CONTAINER_SEL,
+        )
+    except Exception:
+        candidates = []
+
+    best = None
+    best_score = -1
+
+    for element in candidates:
+        try:
+            if not is_visible(driver, element):
+                continue
+
+            _, height, client = scroll_metrics(
+                driver,
+                element,
+            )
+
+            if height <= client + 20:
+                continue
+
+            card_count = len(
+                element.find_elements(
+                    By.CSS_SELECTOR,
+                    REVIEW_CARD_SEL,
+                )
+            )
+
+            score = (
+                card_count * 100_000
+                + client * 100
+                + height
+            )
+
+            if score > best_score:
+                best = element
+                best_score = score
+        except Exception:
+            continue
+
+    if best is not None:
+        return best
+
+    try:
+        cards = driver.find_elements(
+            By.CSS_SELECTOR,
+            REVIEW_CARD_SEL,
+        )
+
+        for card in cards:
+            if not is_visible(driver, card):
+                continue
+
+            container = driver.execute_script(
+                """
+                let el = arguments[0];
+
+                while (el && el !== document.body) {
+                    const style = getComputedStyle(el);
+
+                    if (
+                        el.scrollHeight > el.clientHeight + 20
+                        && (
+                            style.overflowY === 'auto'
+                            || style.overflowY === 'scroll'
+                            || style.overflowY === 'overlay'
+                        )
+                    ) {
+                        return el;
+                    }
+
+                    el = el.parentElement;
+                }
+
+                return null;
+                """,
+                card,
+            )
+
+            if container is not None:
+                return container
+    except Exception:
+        pass
+
+    return driver.execute_script(
+        "return document.scrollingElement || document.body;"
+    )
+
+def scroll_metrics(driver, container) -> Tuple[int, int, int]:
+    try:
+        top, height, client = driver.execute_script(
+            "return [arguments[0].scrollTop,"
+            "arguments[0].scrollHeight,"
+            "arguments[0].clientHeight];",
+            container,
+        )
+        return int(top), int(height), int(client)
+    except Exception:
+        return 0, 0, 0
+
+
+def reset_container(driver, container) -> None:
+    try:
+        driver.execute_script(
+            "arguments[0].scrollTop=0;"
+            "arguments[0].dispatchEvent("
+            "new Event('scroll',{bubbles:true}));",
+            container,
+        )
+        time.sleep(0.3)
+    except Exception:
+        pass
+
+
+def scroll_once(driver, container) -> bool:
+    before_top, _, client = scroll_metrics(
+        driver,
+        container,
+    )
+
+    if client <= 0:
+        return False
+
+    step = max(
+        400,
+        int(client * 0.9),
+    )
+
+    try:
+        driver.execute_script(
+            """
+            if (!arguments[0].hasAttribute('tabindex')) {
+                arguments[0].setAttribute('tabindex', '-1');
+            }
+
+            arguments[0].focus({preventScroll: true});
+            """,
+            container,
+        )
+    except Exception:
+        pass
+
+    if ScrollOrigin is not None:
+        try:
+            origin = ScrollOrigin.from_element(
+                container,
+                0,
+                0,
+            )
+
+            ActionChains(driver).scroll_from_origin(
+                origin,
+                0,
+                step,
+            ).perform()
+
+            time.sleep(0.25)
+
+            after_native, _, _ = scroll_metrics(
+                driver,
+                container,
+            )
+
+            if after_native > before_top:
+                return True
+        except Exception:
+            pass
+
+    try:
+        after_js = driver.execute_script(
+            """
+            const element = arguments[0];
+            const step = arguments[1];
+
+            element.scrollTop = Math.min(
+                element.scrollTop + step,
+                element.scrollHeight
+            );
+
+            element.dispatchEvent(
+                new Event(
+                    'scroll',
+                    {bubbles: true}
+                )
+            );
+
+            return element.scrollTop;
+            """,
+            container,
+            step,
+        )
+
+        time.sleep(0.15)
+        return int(after_js or 0) > before_top
+
+    except Exception:
+        return False
+
+
+def process_url(
+    driver,
+    url: str,
+    cutoff: date,
+) -> Tuple[List[dict], dict]:
+    organization = organization_from_url(url)
+
+    if not navigate(driver, url):
+        return [], {
+            "organization": organization,
+            "platform": PLATFORM_NAME,
+            "rating_avg": 0,
+            "ratings_count": 0,
+            "reviews_count": 0,
+        }
+
+    accept_cookies(driver)
+
+    try:
+        WebDriverWait(
+            driver,
+            WAIT_TIMEOUT,
+        ).until(
+            lambda drv: len(
+                find_review_cards(
+                    drv,
+                    find_scroll_container(drv),
+                )
+            ) > 0
+        )
+    except TimeoutException:
+        print(
+            "  reviews cards were not detected "
+            "before scrolling"
+        )
+
+    rating, ratings_count, reviews_count = extract_summary(driver)
+    container = find_scroll_container(driver)
+    reset_container(driver, container)
+
+    top, height, client = scroll_metrics(
+        driver,
+        container,
+    )
+
+    print(
+        f"  container ready: "
+        f"top={top}, height={height}, "
+        f"client={client}, "
+        f"cards={len(find_review_cards(driver, container))}"
+    )
+
+    print(
+        f"  date cutoff for organization: "
+        f"{cutoff.isoformat()}"
+    )
+
+    reviews: List[dict] = []
+    index: Dict[str, int] = {}
+
+    added, old = collect_reviews(
+        driver,
+        container,
+        reviews,
+        index,
+        cutoff,
+    )
+    print(f"  initial: added={added}, old={old}, total={len(reviews)}")
+
+    idle = 0
+
+    for number in range(
+        1,
+        SCROLL_HARD_LIMIT + 1,
+    ):
+        container = find_scroll_container(
+            driver
+        )
+
+        (
+            before_top,
+            before_height,
+            before_client,
+        ) = scroll_metrics(
+            driver,
+            container,
+        )
+
+        moved = scroll_once(
+            driver,
+            container,
+        )
+        time.sleep(SCROLL_PAUSE)
+
+        added, old = collect_reviews(
+            driver,
+            container,
+            reviews,
+            index,
+            cutoff,
+        )
+
+        (
+            after_top,
+            after_height,
+            after_client,
+        ) = scroll_metrics(
+            driver,
+            container,
+        )
+
+        at_bottom = (
+            after_client > 0
+            and after_top + after_client
+            >= after_height - 5
+        )
+
+        progress = (
+            moved
+            or added > 0
+            or after_top > before_top
+            or after_height > before_height
+        )
+
+        idle = (
+            0
+            if progress
+            else idle + 1
+        )
+
+        print(
+            f"  scroll {number}: "
+            f"moved={moved}, "
+            f"top={before_top}->{after_top}, "
+            f"height={before_height}->{after_height}, "
+            f"added={added}, "
+            f"old_skipped={old}, "
+            f"total_in_threshold={len(reviews)}, "
+            f"bottom={at_bottom}"
+        )
+
+        if (
+            at_bottom
+            and idle >= IDLE_LIMIT
+        ):
+            print(
+                "  stop: reached the end "
+                "of the reviews list"
+            )
+            break
+
+        if idle >= IDLE_LIMIT:
+            print(
+                f"  stop: no progress after "
+                f"{IDLE_LIMIT} attempts"
+            )
+            break
+
+    for review in reviews:
+        review["platform"] = PLATFORM_NAME
+        review["organization"] = organization
+
+    summary = {
+        "organization": organization,
+        "platform": PLATFORM_NAME,
+        "rating_avg": (
+            rating
+            if rating is not None
+            else ""
+        ),
+        "ratings_count": (
+            ratings_count
+            if ratings_count is not None
+            else ""
+        ),
+        "reviews_count": (
+            reviews_count
+            if reviews_count is not None
+            else ""
+        ),
+    }
+
+    print(f"  collected={len(reviews)} | org={organization or '-'}")
+    return reviews, summary
+
+
+def read_urls() -> List[str]:
+    try:
+        urls = [
+            line.strip()
+            for line in URLS_FILE.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+    except FileNotFoundError:
+        urls = []
+    return urls or [FALLBACK_URL]
+
+
+def write_new_reviews(
+    reviews: List[dict],
+) -> None:
+    NEW_REVIEWS_CSV.parent.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    fields = [
+        "rating",
+        "author",
+        "date_iso",
+        "text",
+        "platform",
+        "organization",
+    ]
+
+    with NEW_REVIEWS_CSV.open(
+        "w",
+        newline="",
+        encoding="utf-8",
+    ) as file:
+        writer = csv.DictWriter(
+            file,
+            fieldnames=fields,
+            quoting=csv.QUOTE_ALL,
+        )
+        writer.writeheader()
+        writer.writerows(reviews)
+
+
+def main() -> None:
+    urls = read_urls()
+
+    (
+        existing_keys_by_org,
+        latest_dates_by_org,
+    ) = load_existing_reviews(
+        SOURCE_REVIEWS_CSV
+    )
+
+    print(
+        f"[INFO] Existing 2GIS organizations: "
+        f"{len(existing_keys_by_org)}"
+    )
+    print(
+        f"[INFO] Existing reviews source: "
+        f"{SOURCE_REVIEWS_CSV}"
+    )
+    print(
+        f"[INFO] New reviews output: "
+        f"{NEW_REVIEWS_CSV}"
+    )
+
+    fallback_cutoff = get_cutoff_date()
+
+    all_new_reviews: List[dict] = []
+    driver = None
+    profile = None
+
+    NEW_SUMMARY_CSV.parent.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    try:
+        driver, profile = create_driver()
+
+        with NEW_SUMMARY_CSV.open(
+            "w",
+            newline="",
+            encoding="utf-8",
+        ) as file:
+            writer = csv.DictWriter(
+                file,
+                fieldnames=[
+                    "organization",
+                    "platform",
+                    "rating_avg",
+                    "ratings_count",
+                    "reviews_count",
+                ],
+                quoting=csv.QUOTE_ALL,
+            )
+            writer.writeheader()
+
+            for index, url in enumerate(
+                urls,
+                start=1,
+            ):
+                organization = organization_from_url(
+                    url
+                )
+                org_key = organization_key(
+                    organization
+                )
+
+                existing_keys = (
+                    existing_keys_by_org.setdefault(
+                        org_key,
+                        set(),
+                    )
+                )
+                latest_date = latest_dates_by_org.get(
+                    org_key
+                )
+                cutoff = (
+                    latest_date
+                    if latest_date is not None
+                    else fallback_cutoff
+                )
+
+                print(
+                    f"[{index}/{len(urls)}] {url} "
+                    f"-> org='{organization or '-'}' | "
+                    f"existing={len(existing_keys)} | "
+                    f"threshold={cutoff.isoformat()}"
+                )
+
+                reviews, summary = process_url(
+                    driver,
+                    url,
+                    cutoff,
+                )
+
+                new_for_url: List[dict] = []
+
+                for review in reviews:
+                    key = stored_review_key(
+                        review.get("author"),
+                        review.get("date_iso"),
+                        review.get("text"),
+                    )
+
+                    if key in existing_keys:
+                        continue
+
+                    existing_keys.add(key)
+                    new_for_url.append(review)
+
+                    parsed_date = parse_stored_date(
+                        review.get("date_iso")
+                    )
+                    current_latest = (
+                        latest_dates_by_org.get(
+                            org_key
+                        )
+                    )
+
+                    if (
+                        parsed_date is not None
+                        and (
+                            current_latest is None
+                            or parsed_date > current_latest
+                        )
+                    ):
+                        latest_dates_by_org[
+                            org_key
+                        ] = parsed_date
+
+                all_new_reviews.extend(
+                    new_for_url
+                )
+
+                writer.writerow(summary)
+                file.flush()
+
+                print(
+                    f"  collected in threshold: "
+                    f"{len(reviews)} | "
+                    f"new after comparison: "
+                    f"{len(new_for_url)}"
+                )
+
+    except SessionNotCreatedException as error:
+        print(
+            f"[2GIS WARN] "
+            f"{type(error).__name__}: "
+            f"{error}"
+        )
+
+    finally:
+        close_driver(driver, profile)
+
+    write_new_reviews(all_new_reviews)
+
+    print(
+        f"Done. New reviews: "
+        f"{len(all_new_reviews)}. "
+        f"New reviews -> {NEW_REVIEWS_CSV} | "
+        f"Source unchanged -> "
+        f"{SOURCE_REVIEWS_CSV} | "
+        f"Summary -> {NEW_SUMMARY_CSV}"
+    )
+
 
 if __name__ == "__main__":
     main()

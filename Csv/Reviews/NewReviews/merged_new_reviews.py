@@ -3,9 +3,9 @@ from pathlib import Path
 
 NEWREV_DIR = Path("Csv/Reviews/NewReviews")
 DELTA_FILES = [
-    NEWREV_DIR / "yamaps_new_since.csv",
-    NEWREV_DIR / "gmaps_new_since.csv",
-    NEWREV_DIR / "2gis_new_since.csv",
+    NEWREV_DIR / "new_yamaps_reviews.csv",
+    NEWREV_DIR / "new_gmaps_reviews.csv",
+    NEWREV_DIR / "new_2gis_reviews.csv",
 ]
 ALL_NEW_SINCE = NEWREV_DIR / "all_new_since.csv"
 

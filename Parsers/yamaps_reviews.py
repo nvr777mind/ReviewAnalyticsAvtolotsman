@@ -109,12 +109,6 @@ def _float_from_text(text: str):
 
 
 def extract_summary_fast(driver):
-    """
-    Неблокирующее чтение summary.
-
-    Не использует driver.page_source: на второй SPA-странице Яндекс Карт
-    эта команда может ждать фоновой загрузки и не отдавать управление.
-    """
     rating_avg = None
     ratings_count = None
     reviews_count = None
@@ -174,7 +168,6 @@ def parse_rating(aria_label: str):
         return None
 
 def parse_ru_date_to_iso(s: str):
-    """Возвращает только дату 'YYYY-MM-DD' (None, если не распознали)."""
     if not s:
         return None
     s = s.strip().lower()
@@ -227,10 +220,6 @@ def ensure_window(
     drv: webdriver.Chrome,
     attempts: int = 10,
 ) -> bool:
-    """
-    Во время SPA-перехода window_handles может временно вернуть
-    пустой список или ошибку, хотя окно остаётся открытым.
-    """
     for _ in range(attempts):
         try:
             _ = drv.current_window_handle
@@ -288,12 +277,6 @@ def _first_visible_review_card(driver):
 
 
 def safe_get(drv: webdriver.Chrome, url: str) -> bool:
-    """
-    Неблокирующий переход между организациями.
-
-    document.readyState не используем: у Яндекс Карт он может долго
-    оставаться loading, хотя новая организация уже открыта.
-    """
     expected_id = extract_organization_id(url)
     previous_card = _first_visible_review_card(drv)
 
@@ -314,8 +297,6 @@ def safe_get(drv: webdriver.Chrome, url: str) -> bool:
 
         print(f"  URL changed: {drv.current_url}")
 
-        # Ждём, пока карточка предыдущей организации исчезнет
-        # или станет невидимой.
         if previous_card is not None:
             WebDriverWait(drv, WAIT_TIMEOUT).until(
                 lambda d: _old_card_is_gone(
@@ -323,7 +304,6 @@ def safe_get(drv: webdriver.Chrome, url: str) -> bool:
                 )
             )
 
-        # Ждём уже видимую карточку новой организации.
         WebDriverWait(drv, WAIT_TIMEOUT).until(
             lambda d: _first_visible_review_card(d)
             is not None
@@ -372,10 +352,6 @@ def inject_perf_css(driver):
 
 
 def scroll_reviews_with_wheel(driver, delta_y: int = 900):
-    """
-    Прокручивает именно панель под видимой карточкой реальным wheel-событием.
-    Не зависит от того, какой scroll-container Яндекс оставил в DOM.
-    """
     card = _first_visible_review_card(driver)
 
     if card is None:
@@ -444,8 +420,6 @@ def scroll_reviews_with_wheel(driver, delta_y: int = 900):
         scroll_element,
     )
 
-    # Fallback: если wheel не сдвинул панель, меняем scrollTop
-    # найденного родителя напрямую.
     if after_top == before_top:
         after_top = driver.execute_script(
             """
@@ -592,11 +566,6 @@ def extract_review(review_el):
     return {"author": author, "rating": rating, "date_raw": date_raw, "date_iso": date_iso, "text": text}
 
 def collect_visible_batch(driver, seen: set, out: list, cutoff_date) -> tuple[int, bool]:
-    """
-    Собираем видимые карточки (только с НЕпустым текстом).
-    Возвращаем (сколько добавили, встретили_старый_отзыв_bool).
-    Добавляем только те, у которых дата >= cutoff_date.
-    """
     added = 0
     met_old = False
     cards = driver.find_elements(By.CSS_SELECTOR, "div.business-review-view")
@@ -683,7 +652,9 @@ def main():
             current = driver.current_url or url
             organization = extract_organization_from_url(current) or ""
 
-            # Summary читаем после скролла.
+            if i == 3:
+                organization = "kia_avtolotsman"
+
             rating_avg = None
             ratings_count = None
             reviews_count = None
@@ -711,8 +682,6 @@ def main():
                 cutoff_date,
             )
 
-            # Не завершаем работу до первого скролла:
-            # старый отзыв может быть закреплённым.
             for burst_number in range(BURSTS):
                 prev_len = len(batch)
 
@@ -739,8 +708,6 @@ def main():
                     f"old={met_old}"
                 )
 
-                # После реального скролла можно завершаться,
-                # когда список дошёл до старых отзывов.
                 if met_old:
                     print(
                         f"  stop: reached reviews older than "

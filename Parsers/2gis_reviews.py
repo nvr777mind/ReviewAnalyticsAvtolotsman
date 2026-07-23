@@ -57,7 +57,7 @@ DRIVER_PATH = (
 )
 
 WAIT_TIMEOUT = 20
-SCROLL_BURSTS = 20
+SCROLL_HARD_LIMIT = 1000
 SCROLL_PAUSE = 1.1
 IDLE_LIMIT = 4
 YEARS_LIMIT = 2
@@ -77,13 +77,11 @@ SUMMARY_REVIEWS_COUNT_SEL = "div._4v626nk > span"
 ORGANIZATION_BY_FIRM_ID = {
     "70000001057701394": "avtolotsman_probeg",
     "70000001086881480": "avtolotsman",
+    "70000001083460643": "avtolotsman",
     "5911502791905673": "kia_avtolotsman",
-    "5911502792028090": "mazda_avtolotsman",
-    "70000001083460643": "moskvich_avtolotsman",
     "5911502792136575": "shkoda_avtolotsman",
     "70000001071267471": "avtolotsman_deteyling",
     "70000001083645814": "changan_avtolotsman",
-    "70000001101283058": "liven_avtolotsman",
 }
 
 RU_MONTHS = {
@@ -447,9 +445,6 @@ def extract_summary(driver) -> Tuple[Optional[float], Optional[int], Optional[in
 
 
 def find_review_cards(driver, container=None) -> List:
-    """
-    Ищет карточки только внутри активной панели отзывов.
-    """
     try:
         root = container or find_scroll_container(
             driver
@@ -587,9 +582,6 @@ def collect_reviews(
 
 
 def find_scroll_container(driver):
-    """
-    Возвращает видимую прокручиваемую панель текущей организации.
-    """
     try:
         candidates = driver.find_elements(
             By.CSS_SELECTOR,
@@ -708,10 +700,6 @@ def reset_container(driver, container) -> None:
 
 
 def scroll_once(driver, container) -> bool:
-    """
-    Сначала использует настоящее колесо Selenium.
-    JS-прокрутка служит только запасным вариантом.
-    """
     before_top, _, client = scroll_metrics(
         driver,
         container,
@@ -860,11 +848,27 @@ def process_url(driver, url: str) -> Tuple[List[dict], dict]:
     print(f"  initial: added={added}, old={old}, total={len(reviews)}")
 
     idle = 0
-    for number in range(1, SCROLL_BURSTS + 1):
-        container = find_scroll_container(driver)
-        before_top, before_height, _ = scroll_metrics(driver, container)
 
-        moved = scroll_once(driver, container)
+    for number in range(
+        1,
+        SCROLL_HARD_LIMIT + 1,
+    ):
+        container = find_scroll_container(
+            driver
+        )
+        (
+            before_top,
+            before_height,
+            before_client,
+        ) = scroll_metrics(
+            driver,
+            container,
+        )
+
+        moved = scroll_once(
+            driver,
+            container,
+        )
         time.sleep(SCROLL_PAUSE)
 
         added, old = collect_reviews(
@@ -874,7 +878,21 @@ def process_url(driver, url: str) -> Tuple[List[dict], dict]:
             index,
             cutoff,
         )
-        after_top, after_height, _ = scroll_metrics(driver, container)
+
+        (
+            after_top,
+            after_height,
+            after_client,
+        ) = scroll_metrics(
+            driver,
+            container,
+        )
+
+        at_bottom = (
+            after_client > 0
+            and after_top + after_client
+            >= after_height - 5
+        )
 
         progress = (
             moved
@@ -882,18 +900,39 @@ def process_url(driver, url: str) -> Tuple[List[dict], dict]:
             or after_top > before_top
             or after_height > before_height
         )
-        idle = 0 if progress else idle + 1
+
+        idle = (
+            0
+            if progress
+            else idle + 1
+        )
 
         print(
-            f"  scroll {number}/{SCROLL_BURSTS}: "
+            f"  scroll {number}: "
             f"moved={moved}, "
             f"top={before_top}->{after_top}, "
             f"height={before_height}->{after_height}, "
-            f"added={added}, old={old}, total={len(reviews)}"
+            f"added={added}, "
+            f"old_skipped={old}, "
+            f"total_recent={len(reviews)}, "
+            f"bottom={at_bottom}"
         )
 
+        if (
+            at_bottom
+            and idle >= IDLE_LIMIT
+        ):
+            print(
+                "  stop: reached the end "
+                "of the reviews list"
+            )
+            break
+
         if idle >= IDLE_LIMIT:
-            print(f"  stop: no progress after {IDLE_LIMIT} attempts")
+            print(
+                f"  stop: no progress after "
+                f"{IDLE_LIMIT} attempts"
+            )
             break
 
     for review in reviews:

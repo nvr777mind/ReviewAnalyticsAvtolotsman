@@ -3,9 +3,9 @@ from pathlib import Path
 
 BASE_DIR = Path("Csv/Summary/NewSummary")
 INPUTS = [
-    BASE_DIR / "yamaps_summary_new.csv",
-    BASE_DIR / "gmaps_summary_new.csv",
-    BASE_DIR / "2gis_summary_new.csv",
+    BASE_DIR / "new_yamaps_summary.csv",
+    BASE_DIR / "new_gmaps_summary.csv",
+    BASE_DIR / "new_2gis_summary.csv",
 ]
 OUT = BASE_DIR / "all_new_summary.csv"
 

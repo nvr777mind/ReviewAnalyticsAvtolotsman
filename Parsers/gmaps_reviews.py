@@ -53,7 +53,6 @@ SCROLL_HARD_LIMIT = 3000
 SCROLL_PAUSE = 0.35 if platform.system() == "Windows" else 0.25
 NO_GROWTH_LIMIT = 12 if platform.system() == "Windows" else 10
 CUTOFF_YEARS = 2
-CUTOFF_EXTRA_DAYS = 10
 
 PLATFORM_NAME = "Google Maps"
 DEFAULT_ORGANIZATION = "avtolotsman"
@@ -346,10 +345,14 @@ def parse_review_date(text: str) -> Optional[str]:
 def get_cutoff_date() -> date:
     today = datetime.now().date()
     try:
-        cutoff = today.replace(year=today.year - CUTOFF_YEARS)
+        return today.replace(
+            year=today.year - CUTOFF_YEARS
+        )
     except ValueError:
-        cutoff = today.replace(year=today.year - CUTOFF_YEARS, day=28)
-    return cutoff - timedelta(days=CUTOFF_EXTRA_DAYS)
+        return today.replace(
+            year=today.year - CUTOFF_YEARS,
+            day=28,
+        )
 
 
 def reviews_are_visible(driver) -> bool:
@@ -656,7 +659,60 @@ def count_cards(container) -> Tuple[int, int]:
     return len(cards), text_count
 
 
-def scroll_to_end(driver, container) -> Tuple[int, int]:
+def oldest_loaded_review_date(
+    container,
+) -> Optional[date]:
+    try:
+        cards = container.find_elements(
+            By.CSS_SELECTOR,
+            REVIEW_CARD_SELECTOR,
+        )
+    except Exception:
+        return None
+
+    oldest: Optional[date] = None
+
+    for card in cards:
+        try:
+            date_element = card.find_element(
+                By.CSS_SELECTOR,
+                DATE_SELECTOR,
+            )
+            date_text = (
+                date_element.text
+                or date_element.get_attribute(
+                    "aria-label"
+                )
+                or ""
+            ).strip()
+
+            date_iso = parse_review_date(
+                date_text
+            )
+            if not date_iso:
+                continue
+
+            review_date = date.fromisoformat(
+                date_iso[:10]
+            )
+        except Exception:
+            continue
+
+        if (
+            oldest is None
+            or review_date < oldest
+        ):
+            oldest = review_date
+
+    return oldest
+
+
+def scroll_to_cutoff(
+    driver,
+    container,
+    cutoff_date: date,
+    stop_on_old: bool,
+) -> Tuple[int, int]:
     start_time = monotonic()
     last_height = -1
     last_cards = -1
@@ -665,55 +721,143 @@ def scroll_to_end(driver, container) -> Tuple[int, int]:
 
     focus_container(driver, container)
 
-    for iteration in range(1, SCROLL_HARD_LIMIT + 1):
-        if monotonic() - start_time > MAX_SCROLL_SECONDS:
+    for iteration in range(
+        1,
+        SCROLL_HARD_LIMIT + 1,
+    ):
+        if (
+            monotonic() - start_time
+            > MAX_SCROLL_SECONDS
+        ):
+            print(
+                "  stop scroll: time limit reached"
+            )
             break
 
         if is_stale(driver, container):
-            container = find_reviews_container(driver)
+            container = find_reviews_container(
+                driver
+            )
             if container is None:
                 break
-            focus_container(driver, container)
+            focus_container(
+                driver,
+                container,
+            )
 
         try:
             expand_visible_reviews(container)
-            cards_count, text_cards = count_cards(container)
-            height = int(driver.execute_script("return arguments[0].scrollHeight;", container) or 0)
-            driver.execute_script("arguments[0].scrollTop = arguments[0].scrollHeight;", container)
+
+            cards_count, text_cards = (
+                count_cards(container)
+            )
+            oldest_date = (
+                oldest_loaded_review_date(
+                    container
+                )
+            )
+
+            if (
+                stop_on_old
+                and oldest_date is not None
+                and oldest_date < cutoff_date
+            ):
+                print(
+                    "  stop scroll: oldest loaded "
+                    f"review {oldest_date.isoformat()} "
+                    "is older than "
+                    f"{cutoff_date.isoformat()}"
+                )
+                break
+
+            height = int(
+                driver.execute_script(
+                    "return arguments[0]."
+                    "scrollHeight;",
+                    container,
+                )
+                or 0
+            )
+
+            driver.execute_script(
+                "arguments[0].scrollTop = "
+                "arguments[0].scrollHeight;",
+                container,
+            )
 
             if iteration % 3 == 0:
                 try:
-                    container.send_keys(Keys.PAGE_DOWN)
+                    container.send_keys(
+                        Keys.PAGE_DOWN
+                    )
                 except Exception:
                     pass
+
             if iteration % 6 == 0:
                 try:
-                    container.send_keys(Keys.END)
+                    container.send_keys(
+                        Keys.END
+                    )
                 except Exception:
                     pass
+
             if iteration % 12 == 0:
                 driver.execute_script(
-                    "arguments[0].scrollTop = Math.max(0, arguments[0].scrollTop - 300); arguments[0].scrollTop = arguments[0].scrollHeight;",
+                    "arguments[0].scrollTop = "
+                    "Math.max(0, "
+                    "arguments[0].scrollTop - 300);"
+                    "arguments[0].scrollTop = "
+                    "arguments[0].scrollHeight;",
                     container,
                 )
 
-            grew = height != last_height or cards_count != last_cards or text_cards != last_text_cards
-            no_growth = 0 if grew else no_growth + 1
+            grew = (
+                height != last_height
+                or cards_count != last_cards
+                or text_cards
+                != last_text_cards
+            )
+            no_growth = (
+                0
+                if grew
+                else no_growth + 1
+            )
+
             last_height = height
             last_cards = cards_count
             last_text_cards = text_cards
 
-            if no_growth >= NO_GROWTH_LIMIT:
+            if (
+                no_growth
+                >= NO_GROWTH_LIMIT
+            ):
+                print(
+                    "  stop scroll: "
+                    "no new cards"
+                )
                 break
+
             time.sleep(SCROLL_PAUSE)
 
         except StaleElementReferenceException:
-            container = find_reviews_container(driver)
+            container = find_reviews_container(
+                driver
+            )
             if container is None:
                 break
-            focus_container(driver, container)
+
+            focus_container(
+                driver,
+                container,
+            )
             time.sleep(0.1)
-        except Exception:
+
+        except Exception as error:
+            print(
+                "  stop scroll: "
+                f"{type(error).__name__}: "
+                f"{error}"
+            )
             break
 
     try:
@@ -723,8 +867,18 @@ def scroll_to_end(driver, container) -> Tuple[int, int]:
         return last_cards, last_text_cards
 
 
-def collect_recent_reviews(driver, container, cutoff_date: date) -> Tuple[List[dict], int]:
-    _, total_text_reviews = scroll_to_end(driver, container)
+def collect_recent_reviews(
+    driver,
+    container,
+    cutoff_date: date,
+    stop_on_old: bool,
+) -> Tuple[List[dict], int]:
+    _, total_text_reviews = scroll_to_cutoff(
+        driver,
+        container,
+        cutoff_date,
+        stop_on_old,
+    )
     try:
         cards = container.find_elements(By.CSS_SELECTOR, REVIEW_CARD_SELECTOR)
     except Exception:
@@ -792,8 +946,25 @@ def process_url(driver, url: str, review_writer, summary_writer, index: int, tot
         return
 
     time.sleep(1.2)
-    set_sort_newest(driver)
-    rating, ratings_count = extract_summary(driver)
+
+    sort_newest_ok = set_sort_newest(
+        driver
+    )
+    print(
+        f"  newest sort confirmed: "
+        f"{sort_newest_ok}"
+    )
+
+    if not sort_newest_ok:
+        print(
+            "  warning: early cutoff stop is "
+            "disabled because newest sorting "
+            "was not confirmed"
+        )
+
+    rating, ratings_count = extract_summary(
+        driver
+    )
 
     container = find_reviews_container(driver)
     if container is None:
@@ -804,7 +975,14 @@ def process_url(driver, url: str, review_writer, summary_writer, index: int, tot
         return
 
     organization = organization_from_url_or_title(driver, url)
-    reviews, total_text_reviews = collect_recent_reviews(driver, container, cutoff_date)
+    reviews, total_text_reviews = (
+        collect_recent_reviews(
+            driver,
+            container,
+            cutoff_date,
+            sort_newest_ok,
+        )
+    )
     write_review_rows(review_writer, reviews, organization)
 
     summary_writer.writerow(
