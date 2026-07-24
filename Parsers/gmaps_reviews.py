@@ -35,7 +35,7 @@ if NotOpenSSLWarning:
 
 
 BASE_DIR = Path(__file__).resolve().parent.parent
-URLS_FILE = BASE_DIR / "Urls" / "gmaps_urls.txt"
+URLS_FILE = Path("./Urls/gmaps_urls.txt")
 REVIEWS_CSV = BASE_DIR / "Csv" / "Reviews" / "gmaps_reviews.csv"
 SUMMARY_CSV = BASE_DIR / "Csv" / "Summary" / "gmaps_summary.csv"
 
