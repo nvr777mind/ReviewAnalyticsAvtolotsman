@@ -50,11 +50,10 @@ FALLBACK_URL = (
     "?m=44.975027%2C53.220456%2F17.63"
 )
 
-DRIVER_PATH = (
-    BASE_DIR / "Drivers" / "Windows" / "yandexdriver.exe"
-    if platform.system() == "Windows"
-    else BASE_DIR / "Drivers" / "MacOS" / "yandexdriver"
-)
+if platform.system() == "Windows":
+    DRIVER_PATH = Path("Drivers/Windows/yandexdriver.exe")
+else:
+    DRIVER_PATH = Path("Drivers/MacOS/yandexdriver")
 
 WAIT_TIMEOUT = 20
 SCROLL_HARD_LIMIT = 1000
