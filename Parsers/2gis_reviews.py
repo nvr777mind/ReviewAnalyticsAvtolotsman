@@ -38,7 +38,6 @@ if NotOpenSSLWarning:
     warnings.filterwarnings("ignore", category=NotOpenSSLWarning)
 
 
-BASE_DIR = Path(__file__).resolve().parent.parent
 URLS_FILE = Path("./Urls/2gis_urls.txt")
 REVIEWS_CSV  = Path("Csv/Reviews/2gis_reviews.csv")
 SUMMARY_CSV  = Path("Csv/Summary/2gis_summary.csv")

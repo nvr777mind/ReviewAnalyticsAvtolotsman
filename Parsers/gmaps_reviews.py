@@ -34,10 +34,9 @@ if NotOpenSSLWarning:
     warnings.filterwarnings("ignore", category=NotOpenSSLWarning)
 
 
-BASE_DIR = Path(__file__).resolve().parent.parent
 URLS_FILE = Path("./Urls/gmaps_urls.txt")
-REVIEWS_CSV = BASE_DIR / "Csv" / "Reviews" / "gmaps_reviews.csv"
-SUMMARY_CSV = BASE_DIR / "Csv" / "Summary" / "gmaps_summary.csv"
+REVIEWS_CSV = Path("Csv/Reviews/gmaps_reviews.csv")
+SUMMARY_CSV = Path("Csv/Summary/gmaps_summary.csv")
 
 if platform.system() == "Windows":
     DRIVER_PATH = Path("Drivers/Windows/yandexdriver.exe")

@@ -50,31 +50,16 @@ def find_project_root() -> Path:
     )
 
 
-BASE_DIR = find_project_root()
-URLS_FILE = BASE_DIR / "Urls" / "gmaps_urls.txt"
-SOURCE_REVIEWS_CSV = (
-    BASE_DIR / "Csv" / "Reviews" / "all_reviews.csv"
-)
-NEW_REVIEWS_CSV = (
-    BASE_DIR
-    / "Csv"
-    / "Reviews"
-    / "NewReviews"
-    / "new_gmaps_reviews.csv"
-)
-NEW_SUMMARY_CSV = (
-    BASE_DIR
-    / "Csv"
-    / "Summary"
-    / "NewSummary"
-    / "new_gmaps_summary.csv"
-)
+URLS_FILE =  Path("./Urls/gmaps_urls.txt")
+SOURCE_REVIEWS_CSV = Path("Csv/Reviews/all_reviews.csv")
+NEW_REVIEWS_CSV = Path("Csv/Reviews/NewReviews/new_gmaps_reviews.csv")
+NEW_SUMMARY_CSV = Path("Csv/Summary/NewSummary/new_gmaps_summary.csv")
 
-DRIVER_PATH = (
-    BASE_DIR / "Drivers" / "Windows" / "yandexdriver.exe"
-    if platform.system() == "Windows"
-    else BASE_DIR / "Drivers" / "MacOS" / "yandexdriver"
-)
+if platform.system() == "Windows":
+    DRIVER_PATH = Path("Drivers/Windows/yandexdriver.exe")
+else:
+    DRIVER_PATH = Path("Drivers/MacOS/yandexdriver")
+
 SCRAPER_PROFILE_DIR = Path.home() / ".gmaps-scraper-profile"
 
 FIRST_WAIT = 12

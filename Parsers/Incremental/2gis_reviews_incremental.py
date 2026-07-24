@@ -55,28 +55,13 @@ def find_project_root() -> Path:
     )
 
 
-BASE_DIR = find_project_root()
-URLS_FILE = BASE_DIR / "Urls" / "2gis_urls.txt"
+URLS_FILE = Path("./Urls/2gis_urls.txt")
 
-SOURCE_REVIEWS_CSV = (
-    BASE_DIR / "Csv" / "Reviews" / "all_reviews.csv"
-)
+SOURCE_REVIEWS_CSV = Path("Csv/Reviews/all_reviews.csv")
 
-NEW_REVIEWS_CSV = (
-    BASE_DIR
-    / "Csv"
-    / "Reviews"
-    / "NewReviews"
-    / "new_2gis_reviews.csv"
-)
+NEW_REVIEWS_CSV = Path("Csv/Reviews/NewReviews/new_2gis_reviews.csv")
 
-NEW_SUMMARY_CSV = (
-    BASE_DIR
-    / "Csv"
-    / "Summary"
-    / "NewSummary"
-    / "new_2gis_summary.csv"
-)
+NEW_SUMMARY_CSV = Path("CsvSummaryNewSummary/new_2gis_summary.csv")
 
 FALLBACK_URL = (
     "https://2gis.ru/penza/search/"
@@ -100,7 +85,7 @@ PLATFORM_NAME = "2GIS"
 REVIEW_CARD_SEL = "div._1rowqpjv"
 AUTHOR_SEL = "span._19h0cqe"
 DATE_SEL = "span._10c0hgu"
-RATING_SEL = "div._1u60bur > div._y10azs"
+RATING_SEL = "div._1m0m6z5 > div._1fkin5c"
 TEXT_SELECTORS = ("a._co8kyiw", "div._49x36f > a._1msln3t")
 SCROLL_CONTAINER_SEL = "div._8hh56jx[data-scroll='true']"
 
