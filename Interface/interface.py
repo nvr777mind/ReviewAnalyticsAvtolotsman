@@ -2,6 +2,7 @@ import sys
 import csv
 import json
 import platform
+import time
 from pathlib import Path
 from datetime import datetime
 from typing import Optional, Any, List, Tuple, Dict
@@ -1172,6 +1173,7 @@ class MainWindow(QMainWindow):
         missing = []
         for p in targets:
             rp = _runtime_path(p)
+            
             if not rp.exists():
                 missing.append(str(rp))
 
@@ -1293,6 +1295,7 @@ class MainWindow(QMainWindow):
         missing = []
         for p in targets:
             rp = _runtime_path(p)
+            time.sleep(10)
             if not rp.exists():
                 missing.append(str(rp))
 
