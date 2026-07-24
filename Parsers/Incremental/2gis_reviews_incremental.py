@@ -133,9 +133,10 @@ def find_yandex_browser() -> Optional[Path]:
 
     candidates = (
         [
-            Path.home() / "AppData/Local/Yandex/YandexBrowser/Application/browser.exe",
-            Path(os.environ.get("LOCALAPPDATA", ""))
-            / "Yandex/YandexBrowser/Application/browser.exe",
+            Path.home() / "AppData" / "Local" / "Yandex" / "YandexBrowser" / "Application" / "browser.exe",
+            Path(os.environ.get("LOCALAPPDATA", "")) / "Yandex" / "YandexBrowser" / "Application" / "browser.exe",
+            Path(os.environ.get("ProgramFiles", "")) / "Yandex" / "YandexBrowser" / "Application" / "browser.exe",
+            Path(os.environ.get("ProgramFiles(x86)", "")) / "Yandex" / "YandexBrowser" / "Application" / "browser.exe",
         ]
         if platform.system() == "Windows"
         else [Path("/Applications/Yandex.app/Contents/MacOS/Yandex")]
