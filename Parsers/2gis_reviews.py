@@ -39,9 +39,9 @@ if NotOpenSSLWarning:
 
 
 BASE_DIR = Path(__file__).resolve().parent.parent
-URLS_FILE = BASE_DIR / "Urls" / "2gis_urls.txt"
-REVIEWS_CSV = BASE_DIR / "Csv" / "Reviews" / "2gis_reviews.csv"
-SUMMARY_CSV = BASE_DIR / "Csv" / "Summary" / "2gis_summary.csv"
+URLS_FILE = Path("./Urls/2gis_urls.txt")
+REVIEWS_CSV  = Path("Csv/Reviews/2gis_reviews.csv")
+SUMMARY_CSV  = Path("Csv/Summary/2gis_summary.csv")
 
 FALLBACK_URL = (
     "https://2gis.ru/penza/search/"
