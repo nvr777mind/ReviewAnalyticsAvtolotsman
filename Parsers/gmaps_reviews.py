@@ -39,11 +39,11 @@ URLS_FILE = Path("./Urls/gmaps_urls.txt")
 REVIEWS_CSV = BASE_DIR / "Csv" / "Reviews" / "gmaps_reviews.csv"
 SUMMARY_CSV = BASE_DIR / "Csv" / "Summary" / "gmaps_summary.csv"
 
-DRIVER_PATH = (
-    BASE_DIR / "Drivers" / "Windows" / "yandexdriver.exe"
-    if platform.system() == "Windows"
-    else BASE_DIR / "Drivers" / "MacOS" / "yandexdriver"
-)
+if platform.system() == "Windows":
+    DRIVER_PATH = Path("Drivers/Windows/yandexdriver.exe")
+else:
+    DRIVER_PATH = Path("Drivers/MacOS/yandexdriver")
+
 SCRAPER_PROFILE_DIR = Path.home() / ".gmaps-scraper-profile"
 
 FIRST_WAIT = 12
